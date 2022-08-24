@@ -60,8 +60,51 @@ namespace IngameScript
 
      */
 
+
+
     partial class Program : MyGridProgram
     {
+        #region LOL
+
+        /*
+        string lazyBoiDebugBin = string.Empty;
+        IMyTextSurface whatWentWrongScreen;
+
+        void MyBuggyFunction(string usualArg, ref string ohLawdHeDebuggin)
+        {
+            try
+            {
+                ohLawdHeDebuggin += "You have stepped into your fanctian!\n";
+
+                Object undefined = null;
+                // Do Stuff
+
+                ohLawdHeDebuggin += $"yo watch this ma! {undefined}\n";
+
+                ohLawdHeDebuggin += $"Did you make it here yet?\n";
+            }
+            catch
+            {
+                ohLawdHeDebuggin += "FAILED! :D\n";
+            }
+        }
+
+        void Program()
+        {
+            whatWentWrongScreen = Me.GetSurface(0);
+            whatWentWrongScreen.ContentType = ContentType.TEXT_AND_IMAGE;
+            whatWentWrongScreen.WriteText("");
+        }
+
+        public void Main(string argument, UpdateType updateSource)
+        {
+            whatWentWrongScreen.WriteText(lazyBoiDebugBin);
+            lazyBoiDebugBin = string.Empty; // FOR THE LOVE OF GOD DO NOT REMOVE THIS LINE!!
+        }
+        */
+
+        #endregion
+
         #region MAIN
 
         const string CockpitName = "PILOT";
@@ -92,6 +135,7 @@ namespace IngameScript
 
         bool bInitialized = false;
         bool bWalking = false;
+        bool bPlaneing = false;
         //bool bAnimated;
         bool bSnapping = true;
         bool bLoaded = false;
@@ -227,30 +271,32 @@ namespace IngameScript
         /// CLASSES ///////////////////////////////
         class Joint
         {
-            /// EXTERNALS ///
-
             public IMyMotorStator Stator;
             public IMyPistonBase Piston;
             public IMyMechanicalConnectionBlock Connection;
 
             public string Name;
             public int Index;
-            //public bool Mirror;
-
-            /// INTERNALS ///
 
             public JointType Type;
             public float[] LerpPoints = new float[2];
+
+            //public bool bCorDirTrue;
+
             bool bLerping = false;
+            bool bPlaneing = false;
+            int Direction;
+
             public string LoadedFrame;
-            public float AnimTarget;
-            public float TrueTarget;
-            public int Direction;
+
+            public double AnimTarget;
+            public double PlaneCorrection;
+            public double TrueTarget;
             public double CurrentVelocity;
             public double TargetVelocity;
-            public float ZBcurrent;
+            public double TargetCorrection;
 
-            public Joint(IMyMotorStator stator, int index, string name = "default")//, bool mirror = false) //  bool isRotor = true, int clone = -1
+            public Joint(IMyMotorStator stator, int index, string name = "default")
             {
                 Stator = stator;
                 Connection = Stator;
@@ -273,13 +319,12 @@ namespace IngameScript
 
                 LoadedFrame = "none";
             }
-            public Joint(IMyPistonBase piston, int index, string name = "default")//, bool mirror = false)
+            public Joint(IMyPistonBase piston, int index, string name = "default")
             {
                 Piston = piston;
                 Connection = Stator;
                 Name = name;
                 Index = index;
-                //Mirror = mirror;
                 Type = JointType.PISTON;
                 LoadedFrame = "none";
             }
@@ -313,6 +358,10 @@ namespace IngameScript
             public void OverwriteTrueTarget(float value)
             {
                 TrueTarget = value;
+            }
+            public void CorrectPlane(double value)
+            {
+                PlaneCorrection += value;
             }
             public void LerpAnimationFrame(float lerpTime, ref string debugBin)
             {
@@ -382,43 +431,48 @@ namespace IngameScript
                 if (!active)
                     return;
 
-                // Add dynamic logic here...
                 if (bLerping)
                 {
                     TrueTarget = AnimTarget;
-                    AnimTarget = 0; // Must clear Animation buffer!!
+                    AnimTarget = 0; // Must clear buffer
+                }
+
+                if (bPlaneing)
+                {
+                    TrueTarget += PlaneCorrection;
                 }
 
                 bLerping = false;
+                bPlaneing = false;
             }
             void UpdateRotorVector(ref string debugBin)
             {
-                float current = (Stator.Angle * Rad2Pi);
-                float delta = Math.Abs(TrueTarget - current);
+                double current = (Stator.Angle * Rad2Pi);
+                double delta = Math.Abs(TrueTarget - current);
                 Direction = (delta > 180) ? Math.Sign(current - TrueTarget) : Math.Sign(TrueTarget - current);
-                ZBcurrent = (delta > 180) ? 360 - delta : delta;
+                TargetCorrection = (delta > 180) ? 360 - delta : delta;
                 Direction = (Direction == 0) ? 1 : Direction;
             }
             void UpdateHingeVector(ref string debugBin)
             {
                 float current = (Stator.Angle * Rad2Pi);
-                ZBcurrent = TrueTarget - current;
-                Direction = Math.Sign(ZBcurrent);
-                ZBcurrent = Math.Abs(ZBcurrent);
+                TargetCorrection = TrueTarget - current;
+                Direction = Math.Sign(TargetCorrection);
+                TargetCorrection = Math.Abs(TargetCorrection);
             }
             void UpdatePistonVector(ref string debugBin)
             {
                 float current = Piston.CurrentPosition;
-                ZBcurrent = TrueTarget - current;
-                Direction = Math.Sign(ZBcurrent);
-                ZBcurrent = Math.Abs(ZBcurrent);
+                TargetCorrection = TrueTarget - current;
+                Direction = Math.Sign(TargetCorrection);
+                TargetCorrection = Math.Abs(TargetCorrection);
             }
 
             void UpdateTargetStatorVelocity(bool active)
             {
                 if (active)
                 {
-                    double scale = ZBcurrent * Scaling;
+                    double scale = TargetCorrection * Scaling;
                     //scale = Math.Pow(scale, 3);
                     TargetVelocity = Direction * scale;
                     //TargetVelocity -= CurrentVelocity;
@@ -459,7 +513,7 @@ namespace IngameScript
         class JointFrame
         {
             public Joint Joint;
-            public float LerpPoint; // start and finish (rev & for) points of lerp
+            public float LerpPoint;
 
             public JointFrame(Joint joint, bool snapping = false) // Snapshot
             {
@@ -513,16 +567,17 @@ namespace IngameScript
 
             public IMyTerminalBlock Plane;
             public MatrixD CurrentTargetMatrix;
-            public double Roll;
-            public double Pitch;
 
             public Foot[] Feet;
             public Joint[] Joints;
             public List<Sequence> Sequences;
-            public bool bIgnoreFeet;
 
-            float TriggerTime;
-            bool Triggered;
+            public bool bIgnoreFeet;
+            public bool Triggered;
+
+            public double Pitch;
+            public double Roll;
+            public double TriggerTime;
 
             class JointSort : Comparer<Joint>
             {
@@ -555,8 +610,10 @@ namespace IngameScript
                         seq.JointSet = this;
 
                 SortJoints();
+                SnapshotPlane();
+                BuildAnkles();
             }
-            public JointSet (string name, int jointCount, Foot[] feet = null, List<Sequence> sequences = null, bool ignoreFeet = true, IMyTerminalBlock plane = null)
+            public JointSet(string name, int jointCount, Foot[] feet = null, List<Sequence> sequences = null, bool ignoreFeet = true, IMyTerminalBlock plane = null)
             {
                 Name = name;
                 Sequences = sequences;
@@ -576,7 +633,10 @@ namespace IngameScript
                         seq.JointSet = this;
 
                 SortJoints();
+                SnapshotPlane();
+                BuildAnkles();
             }
+
             public bool ReplaceJoint(IMyTerminalBlock block, int index, string name)
             {
                 if (index < 0 ||
@@ -686,7 +746,7 @@ namespace IngameScript
                 }
                 return false;
             }
-            public void UpdatePlaneing()
+            public void UpdatePlaneing(ref string debugBin)
             {
                 if (Plane == null)
                     return;
@@ -697,9 +757,18 @@ namespace IngameScript
                 Roll = Math.Asin(offset.X / mag);
                 Pitch = Math.Asin(offset.Z / mag);
 
-                foreach(Foot foot in Feet)
+                debugBin += $"Roll:  {Roll}\n";
+                debugBin += $"Pitch: {Pitch}\n";
+
+                return;
+
+                foreach (Foot foot in Feet)
                 {
-                    foot.UpdatePlane();
+                    if (foot.Locked)
+                    {
+                        foot.UpdatePlane(Pitch, Roll);
+                        return;
+                    }
                 }
             }
 
@@ -741,6 +810,56 @@ namespace IngameScript
                 return NV;
             }
 
+            public bool BuildAnkles()
+            {
+                /*
+                roll = ind:R:dir
+                pitch = ind:P:dir
+                 */
+
+                for (int i = 0; i < 2; i++)
+                {
+                    if (Feet[i] == null)
+                        return false;
+
+                    foreach (Joint joint in Joints)
+                    {
+                        if (joint.Connection == null)
+                            continue;
+
+                        string[] raw0 = joint.Connection.CustomData.Split('\n');
+                        foreach (string nextLine in raw0)
+                        {
+                            string[] raw1 = nextLine.Split(':');
+
+                            if (raw1.Length < 2)
+                                continue;
+                            int index = -1;
+                            if (!int.TryParse(raw1[0], out index))
+                                continue;
+                            if (index != i)
+                                continue;
+                            int dir = 0;
+                            if (raw1.Length >= 3)
+                                int.TryParse(raw1[2], out dir);
+
+                            switch (raw1[1])
+                            {
+                                case "P":
+                                    Feet[i].Pitch = joint;
+                                    Feet[i].PlaneDirections[0] = dir;
+                                    break;
+
+                                case "R":
+                                    Feet[i].Roll = joint;
+                                    Feet[i].PlaneDirections[1] = dir;
+                                    break;
+                            }
+                        }
+                    }
+                }
+                return true;
+            }
             void SortJoints()
             {
                 // Option A... onus on user
@@ -786,6 +905,7 @@ namespace IngameScript
             public List<IMyMotorStator> Grips;
             public Joint Pitch;
             public Joint Roll;
+            public int[] PlaneDirections;
 
             public Foot(bool locked, List<IMyLandingGear> pads, List<IMyMotorStator> grips, Joint pitch = null, Joint roll = null)
             {
@@ -794,6 +914,7 @@ namespace IngameScript
                 Grips = grips;
                 Pitch = pitch;
                 Roll = roll;
+                PlaneDirections = new int[2];
 
                 foreach (IMyLandingGear gear in Pads)
                 {
@@ -805,13 +926,14 @@ namespace IngameScript
                     ToggleLock();
             }
 
-            public void UpdatePlane()
-            {
-                if (!Locked ||
-                    Pitch == null ||
-                    Roll == null)
-                    return;
 
+            public void UpdatePlane(double pitch, double roll)
+            {
+                if (Pitch != null)
+                    Pitch.CorrectPlane(pitch * PlaneDirections[0]);
+
+                if (Roll != null)
+                    Roll.CorrectPlane(roll * PlaneDirections[1]);
             }
             public bool CheckTouching(ref string debug)
             {
@@ -1213,6 +1335,13 @@ namespace IngameScript
             bWalking = false;
             CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
             CurrentWalkSet.ZeroJointSet();
+        }
+        void WalkToggle()
+        {
+            if (bWalking)
+                CurrentWalk.UpdateClockMode(OldWalkState);
+            else
+                CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
         }
 
         /// GUI COMPONENTS ////////////////////////
@@ -1735,7 +1864,6 @@ namespace IngameScript
             jFrame.ChangeStatorLerpPoint(newLerpPoint);
         }
 
-
         /// UPATES ///////////////////////////////    
         void ControlInputManager()
         {
@@ -1828,11 +1956,11 @@ namespace IngameScript
             if (CurrentWalk == null)
                 return;
 
+
             if (bWalking == false)
                 return;
 
-            bool updated = CurrentWalk.UpdateSequence(ref DebugBinStream);
-            DebugBinStream += updated ? "Walking...\n" : "Sequence Error!\n";
+            CurrentWalk.UpdateSequence(ref DebugBinStream);
         }
         void AnimationManager()
         {
@@ -1843,6 +1971,17 @@ namespace IngameScript
             {
                 seq.UpdateSequence(ref DebugBinStream);
             }
+        }
+        void PlaneingManager()
+        {
+            if (CurrentWalkSet == null)
+                return;
+
+            if (bPlaneing == false)
+                return;
+
+            DebugBinStream += "Planeing...\n";
+            CurrentWalkSet.UpdatePlaneing(ref DebugBinStream);
         }
         void StatorManager()
         {
@@ -1928,13 +2067,7 @@ namespace IngameScript
 
             SplashPanel.WriteText(output);
         }
-        void WalkToggle()
-        {
-            if (bWalking)
-                CurrentWalk.UpdateClockMode(OldWalkState);
-            else
-                CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
-        }
+
 
         /// ENTRY POINTS ////////////////////////
         public Program()
