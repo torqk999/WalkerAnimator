@@ -1,0 +1,3 @@
+C:\Users\soulb\source\repos\Walker(Rebuild)\Walker v0.4.0\obj\x64\Debug\Walker v0.4.0.csproj.AssemblyReference.cache
+C:\Users\soulb\source\repos\Walker(Rebuild)\Walker v0.4.0\obj\x64\Debug\Walker v0.4.0.exe.config
+C:\Users\soulb\source\repos\Walker(Rebuild)\Walker v0.4.0\obj\x64\Debug\Walker v0.4.0.csproj.CoreCompileInputs.cache
