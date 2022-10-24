@@ -160,6 +160,7 @@ namespace IngameScript
         bool bPlaneing = false;
         bool bSnapping = true;
         bool bLoaded = false;
+        bool bAutoDemo = false;
 
         bool bTargetActive = true;
         bool bStatorControlActive = true;
@@ -201,7 +202,7 @@ namespace IngameScript
             "ChangeSnapping",
             "Decrement",
             "Increment",
-            "Action4",
+            "LoadItem",
             "NewItem",
             "DeleteItem",
             "EditItem",
@@ -230,6 +231,7 @@ namespace IngameScript
             "Toggle ignore plane",
             "Toggle stator control",
             "Toggle stator target",
+            "Toggle auto demo",
             "Increase speed",
             "Decrease speed",
             "Main Menu"
@@ -242,7 +244,7 @@ namespace IngameScript
             "a",
             "d"
         };
-        string MainText = "Mech Control v0.4.1";
+        string MainText = "Mech Control v0.4.2";
         string InfoText = "(InfoScreen)";
         string[] Cursor = new string[] { "  ", "->" };
         #endregion
@@ -353,13 +355,13 @@ namespace IngameScript
             public MatrixD CurrentPlane = MatrixD.Identity;
 
             public Vector3 PlaneBuffer;
-            public double YawBuffer;
-            public double PitchBuffer;
+            //public double YawBuffer;
+            //public double PitchBuffer;
 
             public double AnimTarget;
             public double PlaneCorrection;
             public double ActiveTarget;
-            public double CurrentVelocity;
+            //public double CurrentVelocity;
             public double TargetVelocity;
             public double CorrectionMag;
 
@@ -1022,7 +1024,7 @@ namespace IngameScript
             public float CurrentClockTime;
 
             // Frames
-            int StartFrameIndex;
+            //int StartFrameIndex;
             public KeyFrame CurrentFrame;
             public int CurrentFrameIndex;
 
@@ -1339,19 +1341,13 @@ namespace IngameScript
         /// RUNTIME CONSTRUCTIONS ////////////////
         JointSet ConstructJointSet(ref StringBuilder debugBin, bool ignoreFeet = false, string blockGroupName = null, string name = null)
         {
-            debugBin.Append("Entered Construction...\n");
-
             JointSet output = null;
-
-            debugBin.Append($"Group name: {blockGroupName}");
 
             if (blockGroupName == null)
                 UserInputString(ref blockGroupName);
 
             if (blockGroupName == null)
                 return output;
-
-            debugBin.Append("GroupName good!\n");
 
             IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(blockGroupName);
             if (group == null)
@@ -1389,8 +1385,6 @@ namespace IngameScript
             int LegIndex;
             int dir = 0;
 
-            debugBin.Append("Block Allocations good!\n");
-
             foreach (IMyLandingGear gear in gears)
             {
                 string[] data = gear.CustomData.Split(':');
@@ -1408,8 +1402,6 @@ namespace IngameScript
 
                 toes[LegIndex].Add(gear);
             }
-
-            debugBin.Append("Toes loaded!\n");
 
             foreach (IMyPistonBase piston in pistons)
             {
@@ -1429,39 +1421,22 @@ namespace IngameScript
                 jointBuffer.Add(new Joint(piston, IDindex, partName));
             }
 
-            debugBin.Append("Pistons loaded!\n");
-
             foreach (IMyMotorStator stator in stators)
             {
-                //debugBin.Append("StatorCheck1\n");
-
                 string[] data = stator.CustomData.Split(':');
                 if (data.Length != 4 &&
                     data.Length != 5)
                     continue;
 
-                //debugBin.Append("StatorCheck2\n");
-
                 if (!int.TryParse(data[1], out IDindex))
                     continue;
 
-                //debugBin.Append("StatorCheck3\n");
-
                 int.TryParse(data[2], out LegIndex);
-
-                //if (!int.TryParse(data[2], out LegIndex))
-                //    continue;
-
-                //debugBin.Append("StatorCheck4\n");
 
                 partName = (data[3]);
 
-                //debugBin.Append("StatorCheck5\n");
-
                 if (data.Length == 5)
                     int.TryParse(data[4], out dir);
-
-                //debugBin.Append("StatorCheck6\n");
 
                 Joint newStator = null;
 
@@ -1505,19 +1480,12 @@ namespace IngameScript
                         debugBin.Append("Grip added!\n");
                         break;
                 }
-                //debugBin.Append("Stator Added!\n");
             }
-
-            debugBin.Append("Stators loaded!\n");
-
-            debugBin.Append($"JointCount: {jointBuffer.Count}\n");
 
             Foot[] footBuffer = new Foot[2];
 
             footBuffer[0] = new Foot(ref debugBin, true, toes[0].ToArray(), grips[0].ToArray(), gripDir[0].ToArray(), pitch[0], roll[0]);
             footBuffer[1] = new Foot(ref debugBin, false, toes[1].ToArray(), grips[1].ToArray(), gripDir[1].ToArray(), pitch[1], roll[1]);
-
-            debugBin.Append("Feet generated!\n");
 
             return new JointSet(name, blockGroupName, jointBuffer.ToArray(), footBuffer, /*plane,*/ ignoreFeet);
         }
@@ -1540,7 +1508,6 @@ namespace IngameScript
 
             bWalking = false;
 
-            //CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
             CurrentWalkSet.UpdateFootLockStatus(ref DebugBinStatic);
             CurrentWalkSet.ZeroJointSet();
         }
@@ -1591,13 +1558,12 @@ namespace IngameScript
             }
         }
 
-        
-
         bool DemoSelectedFrame()
         {
             try
             {
-                JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
+                if (bAutoDemo)
+                    JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
                 return true;
             }
             catch
@@ -1629,7 +1595,6 @@ namespace IngameScript
                     {
                         string header = i < 8 ? (i + 1).ToString() : InputLabels[i - 8];
                         output += $"{header} - {LibraryMenuButtons[i]}\n";
-                        //output += $"{header} - {LibraryMenuButtons[(int)mode][i]}\n";
                     }
                     break;
 
@@ -1648,12 +1613,6 @@ namespace IngameScript
                     break;
             }
 
-            /*for (int i = 0; i < ButtonLabels[(int)mode].Length; i++)
-            {
-                string header = i < 8 ? (i + 1).ToString() : InputLabels[i - 8];
-                output += $"{header} - {ButtonLabels[(int)mode][i]}\n";
-            }*/
-
             return output;
         }
         string[] StaticStringBuilder(bool main = true)
@@ -1665,8 +1624,8 @@ namespace IngameScript
         string[] LibraryStringBuilder()
         {
             List<string> stringList = new List<string>();
-            stringList.Add("===Library===");
-            stringList.Add("=============");
+            stringList.Add( "======Library======");
+            stringList.Add($"===(Snapping:{Snapping})===");
             int layer = (int)CurrentGUILayer;
             int cursor = 0;
 
@@ -1770,6 +1729,7 @@ namespace IngameScript
             {
                 stringList.Add($"Ignoring Feet: {CurrentWalkSet.bIgnoreFeet}");
                 stringList.Add($"Ignoring Save: {bIgnoreSave}");
+                stringList.Add($"Auto demo: {bAutoDemo}");
                 stringList.Add($"Planeing: {bPlaneing}");
                 stringList.Add($"Stator control: {bStatorControlActive}");
                 stringList.Add($"Stator target: {bTargetActive}");
@@ -1793,7 +1753,6 @@ namespace IngameScript
             {
                 stringList.Add($"Walk-state: {CurrentWalk.ClockMode}");
                 stringList.Add($"Frame index: {CurrentWalk.CurrentFrameIndex}");
-                stringList.Add($"Lerp Timer: {CurrentWalk.CurrentClockTime}");
                 stringList.Add($"Lerp Speed: {CurrentWalk.CurrentClockSpeed}");
                 stringList.Add($"Left foot locked: {CurrentWalkSet.Feet[0].Locked}");
                 stringList.Add($"Right foot locked: {CurrentWalkSet.Feet[1].Locked}");
@@ -1882,14 +1841,18 @@ namespace IngameScript
                     break;
 
                 case 6:
-                    CurrentWalk.UpdateClockSpeed();
+                    bAutoDemo = !bAutoDemo;
                     break;
 
                 case 7:
-                    CurrentWalk.UpdateClockSpeed(false);
+                    CurrentWalk.UpdateClockSpeed();
                     break;
 
                 case 8:
+                    CurrentWalk.UpdateClockSpeed(false);
+                    break;
+
+                case 9:
                     CurrentGUIMode = GUIMode.MAIN;
                     break;
             }
@@ -1944,7 +1907,6 @@ namespace IngameScript
                     break;
             }
         }
-
         void MainMenuFunctions(int button)
         {
             switch (button)
@@ -2000,7 +1962,7 @@ namespace IngameScript
                     break;
 
                 case 4:
-                    //GUINavigation(GUINav.SELECT);
+                    LoadItem();
                     break;
 
                 case 5:
@@ -2111,6 +2073,93 @@ namespace IngameScript
 
             //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
         }
+
+        bool UserInputString(ref string buffer)
+        {
+            try
+            {
+                StringBuilder myStringBuilder = new StringBuilder();
+                CockPitScreens[2].ReadText(myStringBuilder);
+                buffer = myStringBuilder.ToString();
+                if (buffer == "")
+                    buffer = null;
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        bool UserInputFloat(ref float buffer)
+        {
+            try
+            {
+                StringBuilder myStringBuilder = new StringBuilder();
+                CockPitScreens[2].ReadText(myStringBuilder);
+                buffer = float.Parse(myStringBuilder.ToString());
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        void LoadItem()
+        {
+            if (CurrentGUILayer == GUILayer.JOINT) // do nothing
+                return;
+
+            CurrentWalkSet = JsetBin[SelObjIndex[0]];
+            if (CurrentGUILayer == GUILayer.JSET)
+                return;
+
+            CurrentWalk = CurrentWalkSet.Sequences[SelObjIndex[1]];
+            if (CurrentGUILayer == GUILayer.SEQUENCE)
+                return;
+
+            CurrentWalk.DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
+        }
+        void EditItem()
+        {
+            float value = 0;
+            string name = null;
+            UserInputString(ref name);
+            if (name != null && name.Contains(":"))
+                return;
+            bool floatGood = UserInputFloat(ref value);
+
+            try
+            {
+                switch (CurrentGUILayer)
+                {
+                    case GUILayer.JSET:
+                        JsetBin[SelObjIndex[0]].Name = name;
+                        break;
+
+                    case GUILayer.SEQUENCE:
+                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Name = name;
+                        break;
+
+                    case GUILayer.FRAME:
+                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Name = name;
+                        break;
+
+                    case GUILayer.JOINT:
+                        if (floatGood)
+                        {
+                            JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Jframes[SelObjIndex[3]].ChangeStatorLerpPoint(value);
+                        }
+                        else
+                            JsetBin[SelObjIndex[0]].Joints[SelObjIndex[3]].Name = name;
+                        break;
+                }
+            }
+            catch
+            {
+                // I dunno, I'm tired bruh
+            }
+        }
         void AddItem()
         {
             DebugBinStatic.Clear();
@@ -2133,7 +2182,7 @@ namespace IngameScript
                 case GUILayer.FRAME:
                     if (name == null)
                         name = $"New Frame {JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames.Count}";
-                    
+
                     int index;
                     if (SelObjIndex[2] >= JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames.Count)
                         index = -1;
@@ -2199,78 +2248,6 @@ namespace IngameScript
             {
                 SelObjIndex[3] = 0;
                 return;
-            }
-        }
-        bool UserInputString(ref string buffer)
-        {
-            try
-            {
-                StringBuilder myStringBuilder = new StringBuilder();
-                CockPitScreens[2].ReadText(myStringBuilder);
-                buffer = myStringBuilder.ToString();
-                if (buffer == "")
-                    buffer = null;
-
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        bool UserInputFloat(ref float buffer)
-        {
-            try
-            {
-                StringBuilder myStringBuilder = new StringBuilder();
-                CockPitScreens[2].ReadText(myStringBuilder);
-                buffer = float.Parse(myStringBuilder.ToString());
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        void EditItem()
-        {
-            float value = 0;
-            string name = null;
-            UserInputString(ref name);
-            if (name != null && name.Contains(":"))
-                return;
-            bool floatGood = UserInputFloat(ref value);
-
-            try
-            {
-                switch (CurrentGUILayer)
-                {
-                    case GUILayer.JSET:
-                        JsetBin[SelObjIndex[0]].Name = name;
-                        break;
-
-                    case GUILayer.SEQUENCE:
-                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Name = name;
-                        break;
-
-                    case GUILayer.FRAME:
-                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Name = name;
-                        break;
-
-                    case GUILayer.JOINT:
-                        if (floatGood)
-                        {
-                            JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Jframes[SelObjIndex[3]].ChangeStatorLerpPoint(value);
-                            //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
-                        }
-                        else
-                            JsetBin[SelObjIndex[0]].Joints[SelObjIndex[3]].Name = name;
-                        break;
-                }
-            }
-            catch
-            {
-                // I dunno, I'm tired bruh
             }
         }
         void ChangeSnappingValue()
