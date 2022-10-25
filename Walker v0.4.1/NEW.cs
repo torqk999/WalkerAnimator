@@ -984,8 +984,7 @@ namespace IngameScript
             }
             void ToggleGrip(bool gripping = true)
             {
-                Gripping = gripping;
-                int dir = Gripping ? -1 : 1;
+                int dir = gripping ? -1 : 1;
                 for (int i = 0; i < Grips.Length; i++)
                     Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
             }
@@ -1557,7 +1556,6 @@ namespace IngameScript
                 GUIPanel.WriteText(guiString, false);  
             }
         }
-
         bool DemoSelectedFrame()
         {
             try
@@ -2073,7 +2071,6 @@ namespace IngameScript
 
             //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
         }
-
         bool UserInputString(ref string buffer)
         {
             try
