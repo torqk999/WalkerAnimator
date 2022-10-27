@@ -249,15 +249,16 @@ namespace IngameScript
         string[] Cursor = new string[] { "  ", "->" };
         #endregion
 
-        /// DEBUGGING /////////////////////////////
+        #region DEBUGGING
         IMyTextSurface[] CockPitScreens = new IMyTextSurface[3];
         List<IMyTextPanel> DebugScreens = new List<IMyTextPanel>();
         StringBuilder DebugBinStream;
         StringBuilder DebugBinStatic;
         StringBuilder DisplayManagerBuilder;
         ClockMode OldWalkState;
+        #endregion
 
-        /// SAMPLE OBJECTS ////////////////////////
+        #region SAMPLE OBJECTS
         static readonly string[] SampleJointNames =
         {
             "L_ANK_R",
@@ -281,6 +282,7 @@ namespace IngameScript
 
         JointSet SampleLegs;
         Sequence SampleWalk;
+        #endregion
 
         #region ENUMS
         public enum JointType
@@ -1363,6 +1365,9 @@ namespace IngameScript
             group.GetBlocksOfType(pistons);
             group.GetBlocksOfType(gears);
 
+            List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
+            group.GetBlocks(blocks);
+
             List<Joint> jointBuffer = new List<Joint>();
 
             // foot buffering
@@ -1381,8 +1386,16 @@ namespace IngameScript
 
             string partName = string.Empty;
             int IDindex;
-            int LegIndex;
+            int footIndex;
             int dir = 0;
+
+            /*foreach (IMyTerminalBlock block in blocks)
+            {
+                if (block is IMyLandingGear)
+                {
+                    BuildToe(ref toes);
+                }
+            }*/
 
             foreach (IMyLandingGear gear in gears)
             {
@@ -1396,16 +1409,20 @@ namespace IngameScript
                 if (!int.TryParse(data[1], out IDindex))
                     continue;
 
-                if (!int.TryParse(data[2], out LegIndex))
+                if (!int.TryParse(data[2], out footIndex))
                     continue;
 
-                toes[LegIndex].Add(gear);
+                if (footIndex < 0 ||
+                    footIndex >= 2)
+                    continue;
+
+                toes[footIndex].Add(gear);
             }
 
             foreach (IMyPistonBase piston in pistons)
             {
                 string[] data = piston.CustomData.Split(':');
-                if (data.Length != 3)
+                if (data.Length != 4)
                     continue;
 
                 if (data[0] != "J")
@@ -1430,7 +1447,7 @@ namespace IngameScript
                 if (!int.TryParse(data[1], out IDindex))
                     continue;
 
-                int.TryParse(data[2], out LegIndex);
+                int.TryParse(data[2], out footIndex);
 
                 partName = (data[3]);
 
@@ -1440,27 +1457,25 @@ namespace IngameScript
                 Joint newStator = null;
 
                 /*
-         
-            joint = J:ind:n/a:name
-         toe-pads = T:ind:IND
-             grip = G:ind:IND:name:dir
-
-             roll = R:ind:IND:name:dir
-            pitch = P:ind:IND:name:dir
-            */
+                joint = J:sInd:uInd:n/a :name:n/a
+             toe-pads = T:sInd:uInd:fInd:n/a :n/a
+                 grip = G:sInd:uInd:fInd:name:dir
+                 roll = R:sInd:uInd:fInd:name:dir
+                pitch = P:sInd:uInd:fInd:name:dir
+                */
 
                 switch (data[0])
                 {
                     case "R":
                         newStator = new Joint(stator, IDindex, partName);
-                        roll[LegIndex] = newStator;
+                        roll[footIndex] = newStator;
                         jointBuffer.Add(newStator);
                         debugBin.Append("Roll Joint added!\n");
                         break;
 
                     case "P":
                         newStator = new Joint(stator, IDindex, partName);
-                        pitch[LegIndex] = newStator;
+                        pitch[footIndex] = newStator;
                         jointBuffer.Add(newStator);
                         debugBin.Append("Pitch Joint added!\n");
                         break;
@@ -1469,13 +1484,11 @@ namespace IngameScript
                         newStator = new Joint(stator, IDindex, partName);
                         jointBuffer.Add(newStator);
                         debugBin.Append("Joint added!\n");
-                        //debugBin.Append($"LegIndex: {LegIndex}\n");
-                        //debugBin.Append($"IDindex: {IDindex}\n");
                         break;
 
                     case "G":
-                        gripDir[LegIndex].Add(dir);
-                        grips[LegIndex].Add(stator);
+                        gripDir[footIndex].Add(dir);
+                        grips[footIndex].Add(stator);
                         debugBin.Append("Grip added!\n");
                         break;
                 }
@@ -1488,6 +1501,28 @@ namespace IngameScript
 
             return new JointSet(name, blockGroupName, jointBuffer.ToArray(), footBuffer, /*plane,*/ ignoreFeet);
         }
+        /*
+        void BuildToe(ref List<IMyLandingGear> toeBuffer)
+        {
+            string[] data = gear.CustomData.Split(':');
+            if (data.Length != 3)
+                continue;
+
+            if (data[0] != "T")
+                continue;
+
+            if (!int.TryParse(data[1], out IDindex))
+                continue;
+
+            if (!int.TryParse(data[2], out footIndex))
+                continue;
+
+            if (footIndex < 0 ||
+                footIndex >= 2)
+                continue;
+
+            toes[footIndex].Add(gear);
+        }*/
 
         #region PLAYER INPUTS
         void ToggleAnimations(ClockMode mode)
