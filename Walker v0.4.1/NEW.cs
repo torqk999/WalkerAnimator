@@ -124,6 +124,55 @@ namespace IngameScript
         //const double ROTOR_SPEED_CHK = TWO_PI * 0.9d;
         //const float Rad2Pi = (float)(180 / Math.PI);
 
+        /*            void ReIndexJoints()
+            {
+                for (int i = 0; i < Joints.Length; i++)
+                    if (Joints[i] != null)
+                        Joints[i].Index = i;
+
+            }
+            void UpdateForceGradient()
+            {
+                float forceGradientRange = Math.Abs(ForceGradientMax - ForceGradientMin);
+
+                for (int i = 0; i < Joints.Length; i++)
+                {
+                    float difference = forceGradientRange * (i / (Joints.Length - 1));
+                    if (Feet[0].Locked)
+                        Joints[i].UpdateForce(ForceGradientMin + difference);
+                    else
+                        Joints[i].UpdateForce(ForceGradientMax - difference);
+                }
+            }
+                    public void UpdateForce(float force)
+            {
+                if (Jtype == JointType.PISTON)
+                {
+                    Piston.SetValueFloat("MaxImpulseAxis", force);
+                    Piston.SetValueFloat("MaxImpulseNonAxis", force);
+                }
+                else
+                {
+                    Stator.Torque = force;
+                    Stator.BrakingTorque = force;
+                }
+            }
+         
+                public enum SequenceMode
+        {
+            RESTING,
+            STANDARD
+        }
+        public enum LimbMode
+        {
+            RELEASEING,
+            STANDARD,
+            INTERRUPTABLE,
+            INTERRUPTED
+        }
+
+         */
+
         #region MAIN
 
         const string SampleLegsGroupName = "ALL_JOINTS";
@@ -132,16 +181,14 @@ namespace IngameScript
 
         const float Threshold = .2f;
         const float Scaling = .5f;
-        const float MaxSpeed = 5f;
-        const float ForceGradientMin = 1000;
-        const float ForceGradientMax = 10000000000;
+        const float MaxSpeed = 10f;
         const float ClockIncrmentMag = 0.005f;
         const float ClockSpeedDef = 0.010f;
         const float ClockSpeedMin = 0.005f;
         const float ClockSpeedMax = 0.100f;
         const float TriggerCap = 0.6f;
-        const float PlaneScale = 0.01f;
 
+        const int SaveBlockCountSize = 6;
         const double RAD2DEG = 180 / Math.PI;
 
         IMyCockpit Control;
@@ -155,6 +202,7 @@ namespace IngameScript
         ClockMode AnimationState;
 
         bool bIgnoreSave = true;
+        bool bForceSave = false;
         bool bInitialized = false;
         bool bWalking = false;
         bool bPlaneing = false;
@@ -162,8 +210,8 @@ namespace IngameScript
         bool bLoaded = false;
         bool bAutoDemo = false;
 
-        bool bTargetActive = true;
-        bool bStatorControlActive = true;
+        bool bStatorTarget = true;
+        bool bStatorControl = true;
 
         float Snapping = 5;
         int LastMechInput;
@@ -222,7 +270,7 @@ namespace IngameScript
             "Toggle direction",
             "Initialize walk",
             "Zero out mech",
-            "Main Menu"  
+            "Main Menu"
         };
         static readonly string[] OptionsMenuButtons =
         {
@@ -244,17 +292,18 @@ namespace IngameScript
             "a",
             "d"
         };
-        string MainText = "Mech Control v0.4.2";
+        string MainText = "Mech Control v0.4.4";
         string InfoText = "(InfoScreen)";
         string[] Cursor = new string[] { "  ", "->" };
         #endregion
 
-        #region DEBUGGING
+        #region STRING BUILDERS & SCREENS
         IMyTextSurface[] CockPitScreens = new IMyTextSurface[3];
         List<IMyTextPanel> DebugScreens = new List<IMyTextPanel>();
         StringBuilder DebugBinStream;
         StringBuilder DebugBinStatic;
         StringBuilder DisplayManagerBuilder;
+        StringBuilder SaveData;
         ClockMode OldWalkState;
         #endregion
 
@@ -291,25 +340,12 @@ namespace IngameScript
             HINGE,
             PISTON
         }
-        public enum SequenceMode
-        {
-            RESTING,
-            STANDARD
-        }
-        public enum LimbMode
-        {
-            RELEASEING,
-            STANDARD,
-            INTERRUPTABLE,
-            INTERRUPTED
-        }
         public enum ClockMode
         {
             PAUSE,
             FOR,
             REV,
         }
-
         public enum GUIMode
         {
             MAIN,
@@ -345,79 +381,59 @@ namespace IngameScript
 
             public string Name;
             public int Index;
+            public bool IsGrip;
 
-            public JointType Type;
+            public JointType Jtype;
             public float[] LerpPoints = new float[2];
-
-            //bool bLerping = false;
-            int Direction;
             public string LoadedFrame;
 
-            public bool Planeing = false; // Controlled by linked foot
-            public MatrixD CurrentPlane = MatrixD.Identity;
+            // Controlled by linked foot
+            public bool Planeing = false;
+            public bool Gripping = false;
+            public int AuxDirection = 1;
+            //////////////////////////////
 
-            public Vector3 PlaneBuffer;
-            //public double YawBuffer;
-            //public double PitchBuffer;
-
+            public double PlaneTarget;
             public double AnimTarget;
-            public double PlaneCorrection;
             public double ActiveTarget;
-            //public double CurrentVelocity;
-            public double TargetVelocity;
+
+            public int Direction;
             public double CorrectionMag;
+            public double TargetVelocity;
 
-            public Joint(IMyMotorStator stator, int index, string name = "default")
+            public Joint(IMyMechanicalConnectionBlock mechBlock, int index, string name = "default", bool isGrip = false)
             {
-                Stator = stator;
-                Connection = Stator;
-                stator.Enabled = true;
-                Type = Connection.BlockDefinition.ToString().Contains("Hinge") ? JointType.HINGE : JointType.ROTOR;
+                Connection = mechBlock;
+                mechBlock.Enabled = true;
+                IsGrip = isGrip;
+                Jtype = (mechBlock is IMyPistonBase)? JointType.PISTON : Connection.BlockDefinition.ToString().Contains("Hinge") ? JointType.HINGE : JointType.ROTOR;
 
-                if (Type == JointType.ROTOR)
+                switch(Jtype)
                 {
-                    stator.LowerLimitDeg = float.MinValue;
-                    stator.UpperLimitDeg = float.MaxValue;
-                }
-                else
-                {
-                    stator.LowerLimitDeg = -90;
-                    stator.UpperLimitDeg = 90;
+                    case JointType.ROTOR:
+                        Stator = (IMyMotorStator)mechBlock;
+                        Stator.LowerLimitDeg = float.MinValue;
+                        Stator.UpperLimitDeg = float.MaxValue;
+                        break;
+
+                    case JointType.HINGE:
+                        Stator = (IMyMotorStator)mechBlock;
+                        if (IsGrip)
+                            break;
+                        Stator.LowerLimitDeg = -90;
+                        Stator.UpperLimitDeg = 90;
+                        break;
+
+                    case JointType.PISTON:
+                        Piston = (IMyPistonBase)mechBlock;
+                        break;
                 }
 
                 Name = name;
                 Index = index;
-
-                LoadedFrame = "none";
-            }
-            public Joint(IMyPistonBase piston, int index, string name = "default")
-            {
-                Piston = piston;
-                Connection = Stator;
-                Name = name;
-                Index = index;
-                Type = JointType.PISTON;
                 LoadedFrame = "none";
             }
 
-            public void SnapShotPlane()
-            {
-                CurrentPlane = Stator.WorldMatrix;
-            }
-
-            public void UpdateForce(float force)
-            {
-                if (Type == JointType.PISTON)
-                {
-                    Piston.SetValueFloat("MaxImpulseAxis", force);
-                    Piston.SetValueFloat("MaxImpulseNonAxis", force);
-                }
-                else
-                {
-                    Stator.Torque = force;
-                    Stator.BrakingTorque = force;
-                }
-            }
             public void LoadAnimationFrame(JointFrame frame, bool forward = true, bool interrupt = false)
             {
                 if (forward)
@@ -444,7 +460,7 @@ namespace IngameScript
                 //bLerping = true;
                 float target;
 
-                if (Type == JointType.ROTOR)
+                if (Jtype == JointType.ROTOR)
                 {
                     float mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
                     int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
@@ -466,30 +482,33 @@ namespace IngameScript
             {
                 debugStream.Append($"{Name}:\n");
 
-                UpdatePlaneOffset(ref debugStream);
+
+                //UpdatePlaneOffset(ref debugStream);
                 UpdateActiveTarget(ref debugStream, activeTargetTracking);
-                
-                switch (Type)
+
+                switch (Jtype)
                 {
                     case JointType.ROTOR:
                         UpdateRotorVector(ref debugStream);
+                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdateStator(activeTargetTracking);
                         break;
 
                     case JointType.HINGE:
                         UpdateHingeVector(ref debugStream);
+                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdateStator(activeTargetTracking);
                         break;
 
                     case JointType.PISTON:
                         UpdatePistonVector(ref debugStream);
+                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdatePiston(activeTargetTracking);
                         break;
                 }
 
-                UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
+                
             }
-
             public float ReturnCurrentStatorPosition()
             {
                 if (Stator != null)
@@ -500,66 +519,7 @@ namespace IngameScript
 
                 return -100;
             }
-            void TransformVectorRelative(MatrixD S, Vector3 D, ref Vector3 NV) // S = sourceBearing, D = WorldVectorDelta
-            {
-                /* X,Y,Z = Normalized Vector Unit Coefficients
-                 * x,y,z = Delta Target Vector (raw World GPS)
-                 * a,b,c = Normalized X vector components (relative x,y,z)
-                 * d,e,f = Normalized Y ''
-                 * g,h,i = Normalized Z ''
-                 * 
-                 * Keen Implementation:
-                 *      : Column1 : Column2 : Column3
-                 * Row 1: Right.x , Right.y , Right.z
-                 * Row 2: Up.x    , Up.y    , Up.z
-                 * Row 3: Back.x  , Back.y  , Back.z
-                */
 
-                // Z = (d(bz - cy) + e(cx - az) + f(ay - bx)) / (d(bi - ch) + e(cg - ai) + f(ah - bg))
-
-                // Z =         (d     * ((b     * z)   - (c     * y))   + e     * ((c     * x)   - (a     * z))   + f     * ((a     * y)   - (b     * x)))   / (d     * ((b     * i)     - (c     * h))     + e     * ((c     * g)     - (a     * i))     + f     * ((a     * h)     - (b     * g)))
-                NV.Z = (float)((S.M21 * ((S.M12 * D.Z) - (S.M13 * D.Y)) + S.M22 * ((S.M13 * D.X) - (S.M11 * D.Z)) + S.M23 * ((S.M11 * D.Y) - (S.M12 * D.X))) / (S.M21 * ((S.M12 * S.M33) - (S.M13 * S.M32)) + S.M22 * ((S.M13 * S.M31) - (S.M11 * S.M33)) + S.M23 * ((S.M11 * S.M32) - (S.M12 * S.M31))));
-
-
-                // Y = (Z(hc - ib) + zb - yc) / (fb - ec)
-                // Y = (Z(gb - ha) + ya - xb) / (ea - db)
-
-                // Y =         (Z    * ((h     * c)     - (i     * b))     + (z   * b)     - (y   * c))     / ((f     * b)     - (e     * c))
-                NV.Y = (float)((NV.Z * ((S.M32 * S.M13) - (S.M33 * S.M12)) + (D.Z * S.M12) - (D.Y * S.M13)) / ((S.M23 * S.M12) - (S.M22 * S.M13)));
-
-                // X = (x - (Yd + Zg)) / a
-                // X = (y - (Ye + Zh)) / b
-                // X = (z - (Yf + Zi)) / c
-
-                // X =         (x   - ((Y    * d)     + (Z    * g)))     / a
-                NV.X = (float)((D.X - ((NV.Y * S.M21) + (NV.Z * S.M31))) / S.M11);
-
-            }
-            void UpdatePlaneOffset(ref StringBuilder debugBin)
-            {
-                if (!Planeing)
-                {
-                    PlaneCorrection = 0;
-                    return;
-                }
-
-                TransformVectorRelative(Stator.WorldMatrix, CurrentPlane.Forward, ref PlaneBuffer);
-
-                if (Type == JointType.ROTOR) // Yaw
-                {
-                    PlaneCorrection = Math.Atan2(PlaneBuffer.X, -PlaneBuffer.Z);
-                }
-                
-                if (Type == JointType.HINGE) // Pitch
-                {
-                    PlaneCorrection = Math.Atan2(PlaneBuffer.Y, -PlaneBuffer.Z);        
-                }
-
-                PlaneCorrection *= RAD2DEG;
-                //PlaneCorrection *= PLANE_SCALE;
-
-                debugBin.Append($"PlaneCorrection: {PlaneCorrection}\n");
-            }
             void UpdateActiveTarget(ref StringBuilder debugBin, bool active)
             {
                 if (!active)
@@ -569,7 +529,7 @@ namespace IngameScript
 
                 if (Planeing)
                 {
-                    ActiveTarget += PlaneCorrection;
+                    ActiveTarget += PlaneTarget;
                     ActiveTarget = ActiveTarget > 360 ? ActiveTarget - 360 : ActiveTarget;
                     ActiveTarget = ActiveTarget < -360 ? ActiveTarget + 360 : ActiveTarget;
                 }
@@ -603,14 +563,21 @@ namespace IngameScript
             {
                 if (active)
                 {
-                    double scale = CorrectionMag * Scaling;
-                    //scale = Math.Pow(scale, 3);
-                    TargetVelocity = Direction * scale;
+                    if (IsGrip)
+                    {
+                        TargetVelocity = MaxSpeed * AuxDirection * (Gripping ? 1 : -1);
+                    }
+                    else
+                    {
+                        double scale = CorrectionMag * Scaling;
+                        //scale = Math.Pow(scale, 3);
+                        TargetVelocity = Direction * scale;
 
-                    if (scale < Threshold)
-                        TargetVelocity = 0;
+                        if (scale < Threshold)
+                            TargetVelocity = 0;
 
-                    TargetVelocity = (Math.Abs(TargetVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(TargetVelocity) : TargetVelocity;
+                        TargetVelocity = (Math.Abs(TargetVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(TargetVelocity) : TargetVelocity;
+                    }
                 }
                 else
                     TargetVelocity = 0;
@@ -657,7 +624,7 @@ namespace IngameScript
                 float MIN = 0;
                 float MAX = 0;
 
-                switch (Joint.Type)
+                switch (Joint.Jtype)
                 {
                     case JointType.ROTOR:
                         value = value > 360 ? value - 360 : value;
@@ -687,17 +654,19 @@ namespace IngameScript
         {
             public string Name;
             public string GroupName;
+            public int Index;
 
             public IMyTerminalBlock Plane;
-            public MatrixD CurrentTargetMatrix;
+            public MatrixD CurrentPlane;
+            public Vector3 BearingBuffer;
 
             public Foot[] Feet;
             public Joint[] Joints;
             public List<Sequence> Sequences;
 
             public bool bIgnoreFeet;
-            public bool Triggered = true; // hope...
 
+            public bool Triggered = true;
             public double TriggerTime;
 
             class JointSort : Comparer<Joint>
@@ -711,17 +680,19 @@ namespace IngameScript
                 }
             }
 
-            public JointSet(string name, string groupName, Joint[] joints, Foot[] feet, bool ignoreFeet = true, List<Sequence> sequences = null)
+            public JointSet(string name, string groupName, int index, Joint[] joints, Foot[] feet, IMyTerminalBlock plane = null, List<Sequence> sequences = null, bool ignoreFeet = true)
             {
                 Name = name;
                 GroupName = groupName;
+                Index = index;
                 Sequences = sequences;
                 Joints = joints;
-                bIgnoreFeet = ignoreFeet;
                 Feet = feet;
+                Plane = plane;
+                bIgnoreFeet = ignoreFeet;
 
                 if (Feet == null ||
-                    Feet.Length != 2)
+                    Feet.Length != 2) //    >: |
                     Feet = new Foot[2];
 
                 if (sequences == null)
@@ -732,10 +703,11 @@ namespace IngameScript
 
                 SortJoints();
             }
-            public JointSet(string name, string groupName, int jointCount, IMyTerminalBlock plane = null, bool ignoreFeet = true)
+            public JointSet(string name, string groupName, int index, int jointCount, IMyTerminalBlock plane = null, bool ignoreFeet = true)
             {
                 Name = name;
                 GroupName = groupName;
+                Index = index;
                 Plane = plane;
                 bIgnoreFeet = ignoreFeet;
 
@@ -789,9 +761,8 @@ namespace IngameScript
                     TriggerTime = forward ? 0 : 1;
 
                     Feet[lockIndex].ToggleLock();
-                    //Feet[lockIndex].ToggleGrip();
                     Feet[unLockIndex].ToggleLock(false);
-                    //Feet[unLockIndex].ToggleGrip(false);
+
                     return true; // Lock successful
                 }
 
@@ -842,8 +813,8 @@ namespace IngameScript
             }
             public void SnapShotPlane()
             {
-                foreach (Foot foot in Feet)
-                    foot.SnapShotPlane();
+                if (Plane != null)
+                    CurrentPlane = Plane.WorldMatrix;
             }
             public void TogglePlaneing(bool toggle)
             {
@@ -866,26 +837,66 @@ namespace IngameScript
                 bool MatchPiston(string cubeGridName, IMyPistonBase piston)
                 */
             }
-            void ReIndexJoints()
+            void TransformVectorRelative(MatrixD S, Vector3 D, ref Vector3 NV) // S = sourceBearing, D = WorldVectorDelta
             {
-                for (int i = 0; i < Joints.Length; i++)
-                    if (Joints[i] != null)
-                        Joints[i].Index = i;
+                /* X,Y,Z = Normalized Vector Unit Coefficients
+                 * x,y,z = Delta Target Vector (raw World GPS)
+                 * a,b,c = Normalized X vector components (relative x,y,z)
+                 * d,e,f = Normalized Y ''
+                 * g,h,i = Normalized Z ''
+                 * 
+                 * Keen Implementation:
+                 *      : Column1 : Column2 : Column3
+                 * Row 1: Right.x , Right.y , Right.z
+                 * Row 2: Up.x    , Up.y    , Up.z
+                 * Row 3: Back.x  , Back.y  , Back.z
+                */
+
+                // Z = (d(bz - cy) + e(cx - az) + f(ay - bx)) / (d(bi - ch) + e(cg - ai) + f(ah - bg))
+
+                // Z =         (d     * ((b     * z)   - (c     * y))   + e     * ((c     * x)   - (a     * z))   + f     * ((a     * y)   - (b     * x)))   / (d     * ((b     * i)     - (c     * h))     + e     * ((c     * g)     - (a     * i))     + f     * ((a     * h)     - (b     * g)))
+                NV.Z = (float)((S.M21 * ((S.M12 * D.Z) - (S.M13 * D.Y)) + S.M22 * ((S.M13 * D.X) - (S.M11 * D.Z)) + S.M23 * ((S.M11 * D.Y) - (S.M12 * D.X))) / (S.M21 * ((S.M12 * S.M33) - (S.M13 * S.M32)) + S.M22 * ((S.M13 * S.M31) - (S.M11 * S.M33)) + S.M23 * ((S.M11 * S.M32) - (S.M12 * S.M31))));
+
+
+                // Y = (Z(hc - ib) + zb - yc) / (fb - ec)
+                // Y = (Z(gb - ha) + ya - xb) / (ea - db)
+
+                // Y =         (Z    * ((h     * c)     - (i     * b))     + (z   * b)     - (y   * c))     / ((f     * b)     - (e     * c))
+                NV.Y = (float)((NV.Z * ((S.M32 * S.M13) - (S.M33 * S.M12)) + (D.Z * S.M12) - (D.Y * S.M13)) / ((S.M23 * S.M12) - (S.M22 * S.M13)));
+
+                // X = (x - (Yd + Zg)) / a
+                // X = (y - (Ye + Zh)) / b
+                // X = (z - (Yf + Zi)) / c
+
+                // X =         (x   - ((Y    * d)     + (Z    * g)))     / a
+                NV.X = (float)((D.X - ((NV.Y * S.M21) + (NV.Z * S.M31))) / S.M11);
 
             }
-            void UpdateForceGradient()
+            public void UpdatePlane(ref StringBuilder debugBinStream)
             {
-                float forceGradientRange = Math.Abs(ForceGradientMax - ForceGradientMin);
+                if (Plane == null)
+                    return;
 
-                for (int i = 0; i < Joints.Length; i++)
+                TransformVectorRelative(Plane.WorldMatrix, CurrentPlane.Forward, ref BearingBuffer);
+
+                double pitch = Math.Atan2(BearingBuffer.Y, -BearingBuffer.Z);
+                double yaw = Math.Atan2(BearingBuffer.X, -BearingBuffer.Z);
+                double roll = Math.Atan2(BearingBuffer.Y, BearingBuffer.X);
+
+                foreach (Foot foot in Feet)
                 {
-                    float difference = forceGradientRange * (i / (Joints.Length - 1));
-                    if (Feet[0].Locked)
-                        Joints[i].UpdateForce(ForceGradientMin + difference);
-                    else
-                        Joints[i].UpdateForce(ForceGradientMax - difference);
-                }
+                    if (foot == null)
+                        continue;
 
+                    if (foot.Pitch != null)
+                        foot.Pitch.PlaneTarget = pitch;
+
+                    if (foot.Yaw != null)
+                        foot.Yaw.PlaneTarget = yaw;
+
+                    if (foot.Roll != null)
+                        foot.Roll.PlaneTarget = roll;
+                }
             }
         }
         class Foot
@@ -893,28 +904,27 @@ namespace IngameScript
             public bool Locked;
             public bool Gripping;
             public bool Planeing; // Toggled throough user controls
+
             public IMyLandingGear[] Pads;
-            public IMyMotorStator[] Grips;
+
+            public Joint[] Toes;
             public Joint Pitch;
             public Joint Roll;
-            public int[] PlaneDirections;
-            public int[] GripDirections;
+            public Joint Yaw;
 
-            public Foot(ref StringBuilder debugBin, bool locked, IMyLandingGear[] pads, IMyMotorStator[] grips, int[] gDir, Joint pitch = null, Joint roll = null, int[] pDir = null)
+            public Foot(ref StringBuilder debugBin, IMyLandingGear[] pads, Joint[] toes, Joint pitch = null, Joint yaw = null, Joint roll = null)//, bool locked = false)//, int[] pDir = null)
             {
                 debugBin.Append("Building foot...\n");
                 debugBin.Append($"pitch: {pitch != null}\n");
+                debugBin.Append($"yaw: {yaw != null}\n");
                 debugBin.Append($"roll: {roll != null}\n");
 
-                Locked = locked;
+                Locked = false;
                 Pads = pads;
-                Grips = grips;
-                GripDirections = gDir;
+                Toes = toes;
                 Pitch = pitch;
+                Yaw = yaw;
                 Roll = roll;
-                PlaneDirections = pDir != null ? pDir : new int[2];
-
-                //debugBin.Append("Building pads...");
 
                 foreach (IMyLandingGear gear in Pads)
                 {
@@ -922,12 +932,9 @@ namespace IngameScript
                     gear.Enabled = true;
                 }
 
-                //debugBin.Append("Initializing foot...");
-
                 if (Locked)
                     ToggleLock();
             }
-
             public void ToggleLock(bool locking = true)
             {
                 ToggleGrip(locking);
@@ -955,11 +962,11 @@ namespace IngameScript
                 Planeing = planeing;
                 UpdateFeetPlaneing();
             }
-            public void SnapShotPlane()
+            /*public void SnapShotPlane()
             {
                 Pitch.SnapShotPlane();
                 Roll.SnapShotPlane();
-            }
+            }*/
             public bool CheckTouching(ref StringBuilder debug)
             {
                 foreach (IMyLandingGear gear in Pads)
@@ -972,7 +979,7 @@ namespace IngameScript
             }
             public bool CheckLocked(ref StringBuilder debug)
             {
-                foreach(IMyLandingGear gear in Pads)
+                foreach (IMyLandingGear gear in Pads)
                 {
                     if (gear.LockMode == LandingGearMode.Locked)
                     {
@@ -986,9 +993,11 @@ namespace IngameScript
             }
             void ToggleGrip(bool gripping = true)
             {
-                int dir = gripping ? -1 : 1;
-                for (int i = 0; i < Grips.Length; i++)
-                    Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
+                //int dir = gripping ? -1 : 1;
+                //for (int i = 0; i < Toes.Length; i++)
+                foreach (Joint toe in Toes)
+                    toe.Gripping = gripping;
+                    //Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
             }
             void UpdateFeetPlaneing()
             {
@@ -998,7 +1007,6 @@ namespace IngameScript
                 if (Roll != null)
                     Roll.Planeing = Locked && Planeing;
             }
-            
         }
         class KeyFrame
         {
@@ -1029,7 +1037,7 @@ namespace IngameScript
             public KeyFrame CurrentFrame;
             public int CurrentFrameIndex;
 
-            public Sequence(string name, JointSet set = null, List<KeyFrame> frames = null)
+            public Sequence(string name, JointSet set = null, List<KeyFrame> frames = null, float clockSpeed = ClockSpeedDef)
             {
                 Name = name;
 
@@ -1044,7 +1052,7 @@ namespace IngameScript
                 ClockMode = ClockMode.PAUSE;
                 CurrentFrameIndex = 0;
                 CurrentClockTime = 0;
-                CurrentClockSpeed = ClockSpeedDef;
+                CurrentClockSpeed = clockSpeed;
             }
 
             public void ZeroSequence(ref StringBuilder debugBin)
@@ -1245,7 +1253,6 @@ namespace IngameScript
 
                     joint.Joint.LerpAnimationFrame(lerpTime, ref debugBin);
                 }
-                //debugBin += "Lerped!\n";
             }
         }
         #endregion
@@ -1254,7 +1261,6 @@ namespace IngameScript
         bool SampleLegsConstructor(ref StringBuilder debugBin)
         {
             JsetBin.Clear();
-            //debugBin.Clear();
 
             debugBin.Append("Entered SampleLegsConstructor...\n");
 
@@ -1262,8 +1268,10 @@ namespace IngameScript
 
             List<IMyLandingGear> pads0 = new List<IMyLandingGear>();
             List<IMyLandingGear> pads1 = new List<IMyLandingGear>();
-            List<IMyMotorStator> ankles0 = new List<IMyMotorStator>();
-            List<IMyMotorStator> ankles1 = new List<IMyMotorStator>();
+            List<IMyMotorStator> toes0 = new List<IMyMotorStator>();
+            List<IMyMotorStator> toes1 = new List<IMyMotorStator>();
+            List<Joint> toeBuffer0 = new List<Joint>();
+            List<Joint> toeBuffer1 = new List<Joint>();
             int[][] gDir = new int[2][];
             gDir[0] = new int[4];
             gDir[1] = new int[4];
@@ -1278,28 +1286,26 @@ namespace IngameScript
             if (group1 != null)
                 group1.GetBlocksOfType(pads1);
             if (group2 != null)
-                group2.GetBlocksOfType(ankles0);
+                group2.GetBlocksOfType(toes0);
             if (group3 != null)
-                group3.GetBlocksOfType(ankles1);
+                group3.GetBlocksOfType(toes1);
 
             if (pads0.Count == 0 ||
                 pads1.Count == 0)
             {
-                debugBin.Append("Feet were not found!\n");
+                debugBin.Append("Pads were not found!\n");
                 return false;
             }
 
-            if (ankles0.Count == 0 ||
-                ankles1.Count == 0)
+            if (toes0.Count == 0 ||
+                toes1.Count == 0)
             {
-                debugBin.Append("Ankles were not found!\n");
+                debugBin.Append("Toes were not found!\n");
                 return false;
             }
 
-            SampleLegs = new JointSet("SampleLegs", SampleLegsGroupName, SampleJointNames.Length, Control, false);
+            SampleLegs = new JointSet("SampleLegs", SampleLegsGroupName, 0, SampleJointNames.Length, Control, false);
             CurrentWalkSet = SampleLegs;
-
-            debugBin.Append($"SampleNameCount: {SampleJointNames.Length}");
 
             for (int i = 0; i < SampleJointNames.Length; i++)
             {
@@ -1310,60 +1316,64 @@ namespace IngameScript
                     return false;
                 }
 
-                if (nextJoint is IMyMotorStator)
-                    SampleLegs.Joints[i] = new Joint((IMyMotorStator)nextJoint, i, SampleJointNames[i]);
-
-                if (nextJoint is IMyPistonBase)
-                    SampleLegs.Joints[i] = new Joint((IMyPistonBase)nextJoint, i, SampleJointNames[i]);
-
-                debugBin.Append($"Joint {i}:{SampleJointNames[i]} successfully added!\n");
+                if (nextJoint is IMyMechanicalConnectionBlock)
+                {
+                    SampleLegs.Joints[i] = new Joint((IMyMechanicalConnectionBlock)nextJoint, i, SampleJointNames[i]);
+                    debugBin.Append($"Joint {i}:{SampleJointNames[i]} successfully added!\n");
+                }
             }
 
-            int last = SampleLegs.Joints.Length - 1;
+            foreach (IMyMotorStator toe in toes0)
+                toeBuffer0.Add(new Joint(toe, -1, "LeftToe", true));
+            foreach (IMyMotorStator toe in toes1)
+                toeBuffer1.Add(new Joint(toe, -1, "RightToe", true));
 
-            feet[0] = new Foot(ref debugBin, true, pads0.ToArray(), ankles0.ToArray(), gDir[0], SampleLegs.Joints[1], SampleLegs.Joints[0]);
-            feet[1] = new Foot(ref debugBin, false, pads1.ToArray(), ankles1.ToArray(), gDir[1], SampleLegs.Joints[last - 1], SampleLegs.Joints[last]);
+            //0,1,4 : 5,8,9 : r,p,y
+
+            feet[0] = new Foot(ref debugBin, pads0.ToArray(), toeBuffer0.ToArray(), SampleLegs.Joints[1], SampleLegs.Joints[4], SampleLegs.Joints[0]);
+            feet[1] = new Foot(ref debugBin, pads1.ToArray(), toeBuffer1.ToArray(), SampleLegs.Joints[8], SampleLegs.Joints[5], SampleLegs.Joints[9]);
 
             SampleLegs.Feet = feet;
-
-            //SampleLegs = ConstructJointSet(Control, false, SampleLegsGroupName, "SampleLegs");
 
             JsetBin.Add(SampleLegs);
 
             SampleWalk = new Sequence("walking", SampleLegs);
             CurrentWalk = SampleWalk;
 
-            debugBin.Append($"JointCount: {SampleLegs.Joints.Length}");
-            //Echo($"JointCount: {SampleLegs.Joints.Length}");
-
             return true;
         }
 
         /// RUNTIME CONSTRUCTIONS ////////////////
-        JointSet ConstructJointSet(ref StringBuilder debugBin, bool ignoreFeet = false, string blockGroupName = null, string name = null)
+        JointSet ConstructJointSet(ref StringBuilder debugBin, IMyShipController control, int setIndex, string blockGroupName = null, string name = null, bool ignoreFeet = true)
         {
+            debugBin.Append("Constructing Joint Set...\n");
+
             JointSet output = null;
+
+            if (control == null)
+            {
+                debugBin.Append("control not found!\n");
+                return output;
+            }
 
             if (blockGroupName == null)
                 UserInputString(ref blockGroupName);
 
             if (blockGroupName == null)
+            {
+                debugBin.Append("blockGroupName not found!\n");
                 return output;
+            }
 
             IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(blockGroupName);
             if (group == null)
+            {
+                debugBin.Append("blockGroup not found!\n");
                 return output;
+            }
 
             if (name == null)
                 name = blockGroupName;
-
-            List<IMyMotorStator> stators = new List<IMyMotorStator>();
-            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
-            List<IMyLandingGear> gears = new List<IMyLandingGear>();
-
-            group.GetBlocksOfType(stators);
-            group.GetBlocksOfType(pistons);
-            group.GetBlocksOfType(gears);
 
             List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
             group.GetBlocks(blocks);
@@ -1373,156 +1383,158 @@ namespace IngameScript
             // foot buffering
             Foot[] feetBuffer = new Foot[2];
             List<IMyLandingGear>[] toes = new List<IMyLandingGear>[2];
-            List<IMyMotorStator>[] grips = new List<IMyMotorStator>[2];
+            List<Joint>[] grips = new List<Joint>[2];
             List<int>[] gripDir = new List<int>[2];
             for (int i = 0; i < 2; i++)
             {
                 toes[i] = new List<IMyLandingGear>();
-                grips[i] = new List<IMyMotorStator>();
+                grips[i] = new List<Joint>();
                 gripDir[i] = new List<int>();
             }
             Joint[] pitch = new Joint[2];
-            Joint[] roll = new Joint[2];
+            Joint[] yaw   = new Joint[2];
+            Joint[] roll  = new Joint[2];
 
-            string partName = string.Empty;
-            int IDindex;
-            int footIndex;
-            int dir = 0;
-
-            /*foreach (IMyTerminalBlock block in blocks)
+            foreach (IMyTerminalBlock block in blocks)
             {
                 if (block is IMyLandingGear)
                 {
-                    BuildToe(ref toes);
+                    BuildToe(ref debugBin, ref toes, setIndex, (IMyLandingGear)block);
                 }
-            }*/
 
-            foreach (IMyLandingGear gear in gears)
-            {
-                string[] data = gear.CustomData.Split(':');
-                if (data.Length != 3)
-                    continue;
-
-                if (data[0] != "T")
-                    continue;
-
-                if (!int.TryParse(data[1], out IDindex))
-                    continue;
-
-                if (!int.TryParse(data[2], out footIndex))
-                    continue;
-
-                if (footIndex < 0 ||
-                    footIndex >= 2)
-                    continue;
-
-                toes[footIndex].Add(gear);
-            }
-
-            foreach (IMyPistonBase piston in pistons)
-            {
-                string[] data = piston.CustomData.Split(':');
-                if (data.Length != 4)
-                    continue;
-
-                if (data[0] != "J")
-                    continue;
-
-                if (!int.TryParse(data[1], out IDindex))
-                    continue;
-
-                //if (!int.TryParse(data[2], out LegIndex))
-                //    continue;
-
-                jointBuffer.Add(new Joint(piston, IDindex, partName));
-            }
-
-            foreach (IMyMotorStator stator in stators)
-            {
-                string[] data = stator.CustomData.Split(':');
-                if (data.Length != 4 &&
-                    data.Length != 5)
-                    continue;
-
-                if (!int.TryParse(data[1], out IDindex))
-                    continue;
-
-                int.TryParse(data[2], out footIndex);
-
-                partName = (data[3]);
-
-                if (data.Length == 5)
-                    int.TryParse(data[4], out dir);
-
-                Joint newStator = null;
-
-                /*
-                joint = J:sInd:uInd:n/a :name:n/a
-             toe-pads = T:sInd:uInd:fInd:n/a :n/a
-                 grip = G:sInd:uInd:fInd:name:dir
-                 roll = R:sInd:uInd:fInd:name:dir
-                pitch = P:sInd:uInd:fInd:name:dir
-                */
-
-                switch (data[0])
+                if (block is IMyPistonBase ||
+                    block is IMyMotorStator)
                 {
-                    case "R":
-                        newStator = new Joint(stator, IDindex, partName);
-                        roll[footIndex] = newStator;
-                        jointBuffer.Add(newStator);
-                        debugBin.Append("Roll Joint added!\n");
-                        break;
-
-                    case "P":
-                        newStator = new Joint(stator, IDindex, partName);
-                        pitch[footIndex] = newStator;
-                        jointBuffer.Add(newStator);
-                        debugBin.Append("Pitch Joint added!\n");
-                        break;
-
-                    case "J":
-                        newStator = new Joint(stator, IDindex, partName);
-                        jointBuffer.Add(newStator);
-                        debugBin.Append("Joint added!\n");
-                        break;
-
-                    case "G":
-                        gripDir[footIndex].Add(dir);
-                        grips[footIndex].Add(stator);
-                        debugBin.Append("Grip added!\n");
-                        break;
+                    BuildJoint(ref debugBin, ref jointBuffer, ref pitch, ref yaw, ref roll, setIndex, (IMyMechanicalConnectionBlock)block);
                 }
             }
 
             Foot[] footBuffer = new Foot[2];
 
-            footBuffer[0] = new Foot(ref debugBin, true, toes[0].ToArray(), grips[0].ToArray(), gripDir[0].ToArray(), pitch[0], roll[0]);
-            footBuffer[1] = new Foot(ref debugBin, false, toes[1].ToArray(), grips[1].ToArray(), gripDir[1].ToArray(), pitch[1], roll[1]);
+            footBuffer[0] = new Foot(ref debugBin, toes[0].ToArray(), grips[0].ToArray(), pitch[0], yaw[0], roll[0]);
+            footBuffer[1] = new Foot(ref debugBin, toes[1].ToArray(), grips[1].ToArray(), pitch[1], yaw[1], roll[1]);
 
-            return new JointSet(name, blockGroupName, jointBuffer.ToArray(), footBuffer, /*plane,*/ ignoreFeet);
+            return new JointSet(name, blockGroupName, setIndex, jointBuffer.ToArray(), footBuffer);
         }
-        /*
-        void BuildToe(ref List<IMyLandingGear> toeBuffer)
+        void BuildToe(ref StringBuilder debugBin, ref List<IMyLandingGear>[] toeBuffer, int setIndex, IMyLandingGear gear)
         {
             string[] data = gear.CustomData.Split(':');
-            if (data.Length != 3)
-                continue;
+            if (data.Length != SaveBlockCountSize)
+                return;
 
             if (data[0] != "T")
-                continue;
+                return;
 
-            if (!int.TryParse(data[1], out IDindex))
-                continue;
+            string name = data[1];
 
-            if (!int.TryParse(data[2], out footIndex))
-                continue;
+            int parentIndex;
+            if (!int.TryParse(data[2], out parentIndex))
+                return;
+
+            if (parentIndex != setIndex)
+                return;
+
+            int IDindex;
+            if (!int.TryParse(data[3], out IDindex))
+                IDindex = -1; // un-needed atm
+
+            int footIndex;
+            if (!int.TryParse(data[4], out footIndex))
+                return;
+
+            int direction;
+            if (!int.TryParse(data[5], out direction))
+                return;
 
             if (footIndex < 0 ||
-                footIndex >= 2)
-                continue;
+                footIndex >= toeBuffer.Length)
+                return;
 
-            toes[footIndex].Add(gear);
-        }*/
+            toeBuffer[footIndex].Add(gear);
+        }
+        void BuildJoint(ref StringBuilder debugBin, ref List<Joint> jointBuffer, ref Joint[] pitch, ref Joint[] yaw, ref Joint[] roll, int setIndex, IMyMechanicalConnectionBlock jointBlock)
+        {
+            string[] data = jointBlock.CustomData.Split(':');
+            if (data.Length != SaveBlockCountSize)
+                return;
+
+            /* toe-pads = T:name:sInd:uInd:fInd:n/a
+
+                  joint = J:name:sInd:uInd:n/a :n/a
+                   grip = G:name:sInd:uInd:fInd:dir
+                   roll = R:name:sInd:uInd:fInd:dir
+                  pitch = P:name:sInd:uInd:fInd:dir
+                    yaw = Y:name:sInd:uInd:fInd:dir */
+
+            string name = data[1];
+
+            int parentIndex;
+            if (!int.TryParse(data[2], out parentIndex))
+                return;
+
+            if (parentIndex != setIndex)
+                return;
+
+            int IDindex;
+            if (!int.TryParse(data[3], out IDindex))
+                return;
+
+            int footIndex;
+            if (!int.TryParse(data[4], out footIndex))
+                return;
+
+            int direction;
+            if (!int.TryParse(data[5], out direction))
+                return;
+
+            Joint newJoint = null;
+
+            switch (data[0])
+            {
+                case "P":
+                    if (footIndex < 0 || footIndex >= pitch.Length)
+                        return;
+                    newJoint = new Joint(jointBlock, IDindex, name);
+                    pitch[footIndex] = newJoint;
+                    jointBuffer.Add(newJoint);
+                    debugBin.Append("Pitch Joint added!\n");
+                    break;
+
+                case "Y":
+                    if (footIndex < 0 || footIndex >= yaw.Length)
+                        return;
+                    newJoint = new Joint(jointBlock, IDindex, name);
+                    yaw[footIndex] = newJoint;
+                    jointBuffer.Add(newJoint);
+                    debugBin.Append("Yaw Joint added!\n");
+                    break;
+
+                case "R":
+                    if (footIndex < 0 || footIndex >= roll.Length)
+                        return;
+                    newJoint = new Joint(jointBlock, IDindex, name);
+                    roll[footIndex] = newJoint;
+                    jointBuffer.Add(newJoint);
+                    debugBin.Append("Roll Joint added!\n");
+                    break;
+
+                case "J":
+                    newJoint = new Joint(jointBlock, IDindex, name);
+                    jointBuffer.Add(newJoint);
+                    debugBin.Append("Joint added!\n");
+                    break;
+
+                case "G":
+                    newJoint = new Joint(jointBlock, IDindex, name, true);
+                    jointBuffer.Add(newJoint);
+                    debugBin.Append("Grip added!\n");
+                    break;
+
+                default:
+                    debugBin.Append("Invalid joint code!\n");
+                    break;
+            }
+        }
 
         #region PLAYER INPUTS
         void ToggleAnimations(ClockMode mode)
@@ -1563,10 +1575,10 @@ namespace IngameScript
                 ButtonPanel.WriteText(buttonString, false);
 
                 string[] guiData = null;
-                switch(CurrentGUIMode)
+                switch (CurrentGUIMode)
                 {
                     case GUIMode.LIBRARY:
-                        guiData = LibraryStringBuilder();
+                        guiData = LibraryStringBuilder(ref DebugBinStatic);
                         DemoSelectedFrame();
                         break;
 
@@ -1588,7 +1600,8 @@ namespace IngameScript
                 }
 
                 string guiString = FormattedGUIStringBuilder(guiData);
-                GUIPanel.WriteText(guiString, false);  
+                GUIPanel.WriteText(guiString, false);
+                DebugScreens[1].WriteText(DebugBinStatic);
             }
         }
         bool DemoSelectedFrame()
@@ -1654,48 +1667,27 @@ namespace IngameScript
             string[] output = input.Split('\n');
             return output;
         }
-        string[] LibraryStringBuilder()
+        string[] LibraryStringBuilder(ref StringBuilder debugBin)
         {
             List<string> stringList = new List<string>();
-            stringList.Add( "======Library======");
+            stringList.Add("======Library======");
             stringList.Add($"===(Snapping:{Snapping})===");
             int layer = (int)CurrentGUILayer;
             int cursor = 0;
 
-            int limbIndex = 0;
-            if (JsetBin.Count == 0)
+            try
             {
-                stringList.Add("No limbs loaded!\n");
-            }
-
-            for (int jSetIndex = 0; jSetIndex < JsetBin.Count; jSetIndex++)
-            {
-                if (CurrentGUILayer == GUILayer.JSET &&
-                          SelObjIndex[0] == limbIndex)
+                if (JsetBin.Count == 0)
                 {
-                    CursorIndex = stringList.Count - 1;
-                    cursor = 1;
-                }
-                else
-                    cursor = 0;
-
-                stringList.Add(Cursor[cursor] + "|" + limbIndex + ":" + JsetBin[jSetIndex].Name);
-                limbIndex++;
-
-                if (layer < 1 ||
-                    SelObjIndex[0] != jSetIndex)
-                    continue;
-
-                int sequenceIndex = 0;
-                if (JsetBin[jSetIndex].Sequences.Count == 0)
-                {
-                    stringList.Add(" No sequences found!");
+                    stringList.Add("No limbs loaded!\n");
                 }
 
-                for (int seqIndex = 0; seqIndex < JsetBin[jSetIndex].Sequences.Count; seqIndex++)
+                for (int jSetIndex = 0; jSetIndex < JsetBin.Count; jSetIndex++)
                 {
-                    if (CurrentGUILayer == GUILayer.SEQUENCE &&
-                              SelObjIndex[1] == sequenceIndex)
+                    debugBin.Append($"jSet: {jSetIndex}\n");
+
+                    if (CurrentGUILayer == GUILayer.JSET &&
+                              SelObjIndex[0] == jSetIndex)
                     {
                         CursorIndex = stringList.Count - 1;
                         cursor = 1;
@@ -1703,20 +1695,21 @@ namespace IngameScript
                     else
                         cursor = 0;
 
-                    stringList.Add(Cursor[cursor] + " |" + sequenceIndex + ":" + JsetBin[jSetIndex].Sequences[seqIndex].Name);
-                    sequenceIndex++;
+                    stringList.Add(Cursor[cursor] + "|" + jSetIndex + ":" + JsetBin[jSetIndex].Name);
 
-                    if (layer < 2 ||
-                        SelObjIndex[1] != seqIndex)
+                    if (layer < 1 ||
+                        SelObjIndex[0] != jSetIndex)
                         continue;
 
-                    if (JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count == 0)
-                        stringList.Add("  No frames found!");
-
-                    for (int frameIndex = 0; frameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count; frameIndex++)
+                    if (JsetBin[jSetIndex].Sequences.Count == 0)
                     {
-                        if (CurrentGUILayer == GUILayer.FRAME &&
-                                  SelObjIndex[2] == frameIndex)
+                        stringList.Add(" No sequences found!");
+                    }
+
+                    for (int seqIndex = 0; seqIndex < JsetBin[jSetIndex].Sequences.Count; seqIndex++)
+                    {
+                        if (CurrentGUILayer == GUILayer.SEQUENCE &&
+                                  SelObjIndex[1] == seqIndex)
                         {
                             CursorIndex = stringList.Count - 1;
                             cursor = 1;
@@ -1724,18 +1717,18 @@ namespace IngameScript
                         else
                             cursor = 0;
 
-                        stringList.Add($"{Cursor[cursor]}  |{frameIndex} : {JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Name}");
-                        if (layer < 3 ||
-                            SelObjIndex[2] != frameIndex)
+                        stringList.Add(Cursor[cursor] + " |" + seqIndex + ":" + JsetBin[jSetIndex].Sequences[seqIndex].Name);
+                        if (layer < 2 ||
+                            SelObjIndex[1] != seqIndex)
                             continue;
 
-                        if (JsetBin[jSetIndex].Joints.Length == 0)
-                            stringList.Add("   No joints found!");
+                        if (JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count == 0)
+                            stringList.Add("  No frames found!");
 
-                        for (int jFrameIndex = 0; jFrameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes.Count(); jFrameIndex++)
+                        for (int frameIndex = 0; frameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count; frameIndex++)
                         {
-                            if (CurrentGUILayer == GUILayer.JOINT &&
-                                      SelObjIndex[3] == jFrameIndex)
+                            if (CurrentGUILayer == GUILayer.FRAME &&
+                                      SelObjIndex[2] == frameIndex)
                             {
                                 CursorIndex = stringList.Count - 1;
                                 cursor = 1;
@@ -1743,10 +1736,34 @@ namespace IngameScript
                             else
                                 cursor = 0;
 
-                            stringList.Add($"{Cursor[cursor]}    |{jFrameIndex}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].Joint.Name}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].LerpPoint}");
+                            stringList.Add($"{Cursor[cursor]}  |{frameIndex} : {JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Name}");
+                            if (layer < 3 ||
+                                SelObjIndex[2] != frameIndex)
+                                continue;
+
+                            if (JsetBin[jSetIndex].Joints.Length == 0)
+                                stringList.Add("   No joints found!");
+
+                            for (int jFrameIndex = 0; jFrameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes.Count(); jFrameIndex++)
+                            {
+                                if (CurrentGUILayer == GUILayer.JOINT &&
+                                          SelObjIndex[3] == jFrameIndex)
+                                {
+                                    CursorIndex = stringList.Count - 1;
+                                    cursor = 1;
+                                }
+                                else
+                                    cursor = 0;
+
+                                stringList.Add($"{Cursor[cursor]}    |{jFrameIndex}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].Joint.Name}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].LerpPoint}");
+                            }
                         }
                     }
                 }
+            }
+            catch
+            {
+                debugBin.Append("FAIL POINT!\n");
             }
 
             string[] output = stringList.ToArray();
@@ -1764,15 +1781,15 @@ namespace IngameScript
                 stringList.Add($"Ignoring Save: {bIgnoreSave}");
                 stringList.Add($"Auto demo: {bAutoDemo}");
                 stringList.Add($"Planeing: {bPlaneing}");
-                stringList.Add($"Stator control: {bStatorControlActive}");
-                stringList.Add($"Stator target: {bTargetActive}");
+                stringList.Add($"Stator control: {bStatorControl}");
+                stringList.Add($"Stator target: {bStatorTarget}");
                 stringList.Add($"Lerp Speed: {CurrentWalk.CurrentClockSpeed}");
             }
             catch
             {
                 stringList.Add("Error!");
             }
-            
+
             string[] output = stringList.ToArray();
             return output;
         }
@@ -1866,11 +1883,11 @@ namespace IngameScript
                     break;
 
                 case 4:
-                    bStatorControlActive = !bStatorControlActive;
+                    bStatorControl = !bStatorControl;
                     break;
 
                 case 5:
-                    bTargetActive = !bTargetActive;
+                    bStatorTarget = !bStatorTarget;
                     break;
 
                 case 6:
@@ -1892,7 +1909,7 @@ namespace IngameScript
         }
         void ControlMenuFunctions(int button)
         {
-            switch(button)
+            switch (button)
             {
                 case 1:
                     DebugBinStatic.Append($"Lock Left Foot Success: {CurrentWalkSet.InitializeGrip(ref DebugBinStatic)}");
@@ -2061,6 +2078,12 @@ namespace IngameScript
             else
                 SelectedLineIndex--;
 
+            RefreshSelection();
+
+            //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
+        }
+        void RefreshSelection()
+        {
             JointSet limb = null;
             if (JsetBin.Count > SelObjIndex[0])
                 limb = JsetBin[SelObjIndex[0]];
@@ -2080,31 +2103,33 @@ namespace IngameScript
             switch (CurrentGUILayer)
             {
                 case GUILayer.JSET:
-                    SelectedLineIndex = (SelectedLineIndex >= JsetBin.Count) ? 0 : SelectedLineIndex;
-                    SelectedLineIndex = (SelectedLineIndex < 0) ? JsetBin.Count - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex >= JsetBin.Count ? 0 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? JsetBin.Count - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? 0 : SelectedLineIndex;
                     SelObjIndex[0] = SelectedLineIndex;
                     break;
 
                 case GUILayer.SEQUENCE:
-                    SelectedLineIndex = (SelectedLineIndex >= seqCount) ? 0 : SelectedLineIndex;
-                    SelectedLineIndex = (SelectedLineIndex < 0) ? seqCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex >= seqCount ? 0 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? seqCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? 0 : SelectedLineIndex;
                     SelObjIndex[1] = SelectedLineIndex;
                     break;
 
                 case GUILayer.FRAME:
-                    SelectedLineIndex = (SelectedLineIndex >= frameCount) ? 0 : SelectedLineIndex;
-                    SelectedLineIndex = (SelectedLineIndex < 0) ? frameCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex >= frameCount ? 0 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? frameCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? 0 : SelectedLineIndex;
                     SelObjIndex[2] = SelectedLineIndex;
                     break;
 
                 case GUILayer.JOINT:
-                    SelectedLineIndex = (SelectedLineIndex >= jointCount) ? 0 : SelectedLineIndex;
-                    SelectedLineIndex = (SelectedLineIndex < 0) ? jointCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex >= jointCount ? 0 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? jointCount - 1 : SelectedLineIndex;
+                    SelectedLineIndex = SelectedLineIndex < 0 ? 0 : SelectedLineIndex;
                     SelObjIndex[3] = SelectedLineIndex;
                     break;
             }
-
-            //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
         }
         bool UserInputString(ref string buffer)
         {
@@ -2194,15 +2219,15 @@ namespace IngameScript
         }
         void AddItem()
         {
-            DebugBinStatic.Clear();
             string name = null;
             UserInputString(ref name);
 
             switch (CurrentGUILayer)
             {
                 case GUILayer.JSET:
-                    Echo("yo");
-                    ConstructJointSet(ref DebugBinStatic);
+                    JointSet newSet = ConstructJointSet(ref DebugBinStatic, Control, JsetBin.Count); // build new set index's based on existing count for now, will need re-indexing when a set is removed
+                    if (newSet != null)
+                        JsetBin.Add(newSet);
                     break;
 
                 case GUILayer.SEQUENCE:
@@ -2224,6 +2249,8 @@ namespace IngameScript
                     DebugBinStatic.Append($"Frame Generation Success: {JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].AddKeyFrameSnapshot(ref DebugBinStatic, index, name, bSnapping)}\n");
                     break;
             }
+
+            RefreshSelection();
             DebugScreens[1].WriteText(DebugBinStatic.ToString());
         }
         void DeleteItem()
@@ -2387,11 +2414,13 @@ namespace IngameScript
         }
         void WalkManager()
         {
-            if (CurrentWalk == null)
+            if (CurrentWalkSet == null)
                 return;
 
+            CurrentWalkSet.UpdatePlane(ref DebugBinStream);
 
-            if (bWalking == false)
+            if (CurrentWalk == null ||
+                bWalking == false)
                 return;
 
             CurrentWalk.UpdateSequence(ref DebugBinStream);
@@ -2412,14 +2441,14 @@ namespace IngameScript
                 JsetBin.Count == 0)
                 return;
 
-            if (!bStatorControlActive)
+            if (!bStatorControl)
                 return;
 
             foreach (JointSet set in JsetBin)
             {
                 foreach (Joint joint in set.Joints)
                 {
-                    joint.UpdateJoint(bTargetActive, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
+                    joint.UpdateJoint(bStatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
                 }
             }
         }
@@ -2453,7 +2482,7 @@ namespace IngameScript
 
             catch
             { DisplayManagerBuilder.Append("FAIL POINT!"); }
-            panel.WriteText(DisplayManagerBuilder.ToString());
+            panel.WriteText(DisplayManagerBuilder);
             return true;
         }
         bool SequenceFramePrimer(IMyTextSurface panel)
@@ -2479,7 +2508,7 @@ namespace IngameScript
 
             catch
             { DisplayManagerBuilder.Append("FAIL POINT!"); }
-            panel.WriteText(DisplayManagerBuilder.ToString());
+            panel.WriteText(DisplayManagerBuilder);
             return true;
         }
         bool MechStatus(IMyTextSurface panel)
@@ -2499,8 +2528,8 @@ namespace IngameScript
                 DisplayManagerBuilder.Append($"CurrentLegsIgnoringFeet: {CurrentWalkSet.bIgnoreFeet}\n\n");
 
                 DisplayManagerBuilder.Append($"Walking: {bWalking}\n");
-                DisplayManagerBuilder.Append($"TargetActive: {bTargetActive}\n");
-                DisplayManagerBuilder.Append($"StatorControlActive: {bStatorControlActive}\n");
+                DisplayManagerBuilder.Append($"TargetActive: {bStatorTarget}\n");
+                DisplayManagerBuilder.Append($"StatorControlActive: {bStatorControl}\n");
                 DisplayManagerBuilder.Append($"Snapping: {bSnapping}\n");
                 DisplayManagerBuilder.Append($"SnappingValue: {Snapping}\n\n");
 
@@ -2525,18 +2554,6 @@ namespace IngameScript
             try
             {
                 DisplayManagerBuilder.Append("Debug Plus!:\n");
-
-                /*DisplayManagerBuilder.Append($"Jset Exists: {CurrentWalkSet != null}\n");
-                DisplayManagerBuilder.Append($"Feet Exists: {CurrentWalkSet.Feet != null}\n");
-                DisplayManagerBuilder.Append($"LeftFoot Exists: {CurrentWalkSet.Feet[0] != null}\n");
-                DisplayManagerBuilder.Append($"LeftRoll Exists: {CurrentWalkSet.Feet[0].Roll != null}\n");
-                DisplayManagerBuilder.Append($"LeftPitch Exists: {CurrentWalkSet.Feet[0].Pitch != null}\n");
-                DisplayManagerBuilder.Append($"RightFoot Exists: {CurrentWalkSet.Feet[1] != null}\n");*/
-
-                /*DisplayManagerBuilder.Append($"{CurrentWalkSet.Feet[0].Roll.Name}:\nRight:\n{CurrentWalkSet.Feet[0].Roll.CurrentPlane.Right}\n{CurrentWalkSet.Feet[0].Roll.Connection.WorldMatrix.Right}\nUp:\n{CurrentWalkSet.Feet[0].Roll.CurrentPlane.Up}\n{CurrentWalkSet.Feet[0].Roll.Connection.WorldMatrix.Up}\nForward:\n{CurrentWalkSet.Feet[0].Roll.CurrentPlane.Forward}\n{CurrentWalkSet.Feet[0].Roll.Connection.WorldMatrix.Forward}\n");
-                DisplayManagerBuilder.Append($"{CurrentWalkSet.Feet[0].Pitch.Name}:\nRight:\n{CurrentWalkSet.Feet[0].Pitch.CurrentPlane.Right}\n{CurrentWalkSet.Feet[0].Pitch.Connection.WorldMatrix.Right}\nUp:\n{CurrentWalkSet.Feet[0].Pitch.CurrentPlane.Up}\n{CurrentWalkSet.Feet[0].Pitch.Connection.WorldMatrix.Up}\nForward:\n{CurrentWalkSet.Feet[0].Pitch.CurrentPlane.Forward}\n{CurrentWalkSet.Feet[0].Pitch.Connection.WorldMatrix.Forward}\n");
-                DisplayManagerBuilder.Append($"{CurrentWalkSet.Feet[1].Roll.Name}:\nRight:\n{CurrentWalkSet.Feet[1].Roll.CurrentPlane.Right}\n{CurrentWalkSet.Feet[1].Roll.Connection.WorldMatrix.Right}\nUp:\n{CurrentWalkSet.Feet[1].Roll.CurrentPlane.Up}\n{CurrentWalkSet.Feet[1].Roll.Connection.WorldMatrix.Up}\nForward:\n{CurrentWalkSet.Feet[1].Roll.CurrentPlane.Forward}\n{CurrentWalkSet.Feet[1].Roll.Connection.WorldMatrix.Forward}\n");
-                DisplayManagerBuilder.Append($"{CurrentWalkSet.Feet[1].Pitch.Name}:\nRight:\n{CurrentWalkSet.Feet[1].Pitch.CurrentPlane.Right}\n{CurrentWalkSet.Feet[1].Pitch.Connection.WorldMatrix.Right}\nUp:\n{CurrentWalkSet.Feet[1].Pitch.CurrentPlane.Up}\n{CurrentWalkSet.Feet[1].Pitch.Connection.WorldMatrix.Up}\nForward:\n{CurrentWalkSet.Feet[1].Pitch.CurrentPlane.Forward}\n{CurrentWalkSet.Feet[1].Pitch.Connection.WorldMatrix.Forward}\n");*/
 
                 DisplayManagerBuilder.Append($"\n=-=-=-=-=-=-=\n{DebugBinStream.ToString()}");
             }
@@ -2583,6 +2600,7 @@ namespace IngameScript
                 DebugBinStream = new StringBuilder();
                 DebugBinStatic = new StringBuilder();
                 DisplayManagerBuilder = new StringBuilder();
+                SaveData = new StringBuilder();
 
                 Control = (IMyCockpit)GridTerminalSystem.GetBlockWithName(CockpitName);
                 IMyBlockGroup panelGroup = GridTerminalSystem.GetBlockGroupWithName(LCDgroupName);
@@ -2627,7 +2645,7 @@ namespace IngameScript
             {
                 DebugBinStatic.Append("Load Failed!\n");
                 SampleLegsConstructor(ref DebugBinStatic);
-                
+
                 bLoaded = false;
             }
             else
@@ -2637,7 +2655,6 @@ namespace IngameScript
             }
 
             DebugScreens[1].WriteText(DebugBinStatic.ToString());
-            DebugBinStatic.Clear();
 
             GUIUpdate();
 
@@ -2651,7 +2668,6 @@ namespace IngameScript
                 return;
 
             DebugBinStream.Clear(); // MUST HAPPEN!
-
 
             switch (argument)
             {
@@ -2691,11 +2707,11 @@ namespace IngameScript
                     break;
 
                 case "TOGGLE_STATOR_TARGET":
-                    bTargetActive = !bTargetActive;
+                    bStatorTarget = !bStatorTarget;
                     break;
 
                 case "TOGGLE_STATOR_CONTROL":
-                    bStatorControlActive = !bStatorControlActive;
+                    bStatorControl = !bStatorControl;
                     break;
 
                 case "ANIMATIONS":
@@ -2735,12 +2751,19 @@ namespace IngameScript
                     break;
 
                 case "SAVE":
+                    bForceSave = true;
                     Save();
+                    bForceSave = false;
                     break;
 
                 case "LOAD":
                     Load(ref DebugBinStatic);
                     DebugScreens[1].WriteText(DebugBinStatic.ToString());
+                    break;
+
+                case "CLEAR_DEBUG":
+                    DebugBinStatic.Clear();
+                    DebugScreens[1].WriteText("");
                     break;
 
                 default:
@@ -2765,22 +2788,18 @@ namespace IngameScript
 Tolkens:
 :  - Divider
 /n - Entry
-&0 - Foot (&0:index)
-&1 - Ankle (&1:CustomName)
-&2 - Pad (&2:CustomName)
-!  - Joint (!:Name:Index:CustomName)
 
-#  - JointSet (#:Name:GroupName:bIgnoreFeet)
-$  - Sequence ($:Name)
+&  - Options (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
+#  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
+$  - Sequence ($:Name:LerpSpeed)
 %0 - KeyFrame (%0:Name)
 %1 - JointFrame (%1:LerpPoint)
  */
             JsetBin.Clear();
-            //DebugBinStatic.Clear();
 
             string[] load = Me.CustomData.Split('\n');
 
-            debugBin.Append("data loaded...\n");
+            debugBin.Append("data loaded!\n");
 
             List<JointFrame> jFrameBuffer = new List<JointFrame>();
             List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
@@ -2796,27 +2815,41 @@ $  - Sequence ($:Name)
 
                     switch (entry[0])
                     {
-                        case "#":
-                            current = ConstructJointSet(ref DebugBinStatic, bool.Parse(entry[3]), entry[2], entry[1]);
-                            JsetBin.Add(current);
+                        case "&":
+                            debugBin.Append("loading options...\n");
+                            bIgnoreSave = bool.Parse(entry[1]);
+                            bAutoDemo = bool.Parse(entry[2]);
+                            bPlaneing = bool.Parse(entry[3]);
+                            bStatorControl = bool.Parse(entry[4]);
+                            bStatorTarget = bool.Parse(entry[5]);
+                            debugBin.Append("options loaded!\n");
+                            break;
 
-                            //seqBuffer.Clear();
+                        case "#":
+                            debugBin.Append("constructing jointset...\n");
+                            current = ConstructJointSet(ref DebugBinStatic, Control, int.Parse(entry[1]), entry[2], entry[3], bool.Parse(entry[4]));
+                            if (current == null)
+                                break;
+                            JsetBin.Add(current);
+                            debugBin.Append("jointset built!\n");
                             break;
 
                         case "%1":
+                            debugBin.Append("constructing jframe...\n");
                             jFrameBuffer.Add(new JointFrame(current.Joints[jFrameBuffer.Count], float.Parse(entry[1])));
                             break;
 
                         case "%0":
+                            debugBin.Append("constructing kframe...\n");
                             kFrameBuffer.Add(new KeyFrame(entry[1], jFrameBuffer.ToArray()));
                             jFrameBuffer.Clear();
                             break;
 
                         case "$":
+                            debugBin.Append("constructing sequence...\n");
                             List<KeyFrame> newFrames = new List<KeyFrame>();
                             newFrames.AddRange(kFrameBuffer);
-                            //current.Sequences.Add(new Sequence(entry[1], null, newFrames));
-                            new Sequence(entry[1], current, newFrames);
+                            new Sequence(entry[1], current, newFrames, float.Parse(entry[2]));
                             kFrameBuffer.Clear();
                             break;
                     }
@@ -2824,8 +2857,7 @@ $  - Sequence ($:Name)
                 catch
                 {
                     DebugBinStatic.Append("Fail Point!\n");
-                    Echo(DebugBinStatic.ToString());
-
+                    JsetBin.Clear();
                     return false;
                 }
                 debugCounter++;
@@ -2855,65 +2887,57 @@ $  - Sequence ($:Name)
             /*
             Tolkens:
             :  - Divider
-
-            #  - JointSet (#:Name:bIgnoreFeet)
-            $  - Sequence ($:Name)
+            &  - Options (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
+            #  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
+            $  - Sequence ($:Name:LerpSpeed)
             %0 - KeyFrame (%0:Name)
             %1 - JointFrame (%1:LerpPoint)
 
-            &0 - Foot (&0:index:bLocked)
-            &1 - Ankle (&1:CustomName)
-            &2 - Pad (&2:CustomName)
-            !  - Joint (!:Name:Index:CustomName)
+
              */
 
-            /*
-              
-ind         = personal
-IND         = leg
-toe-pads    = T:ind:IND
-joint       = J:ind:n/a:name
-grip        = G:ind:IND:name:dir
-roll        = R:ind:IND:name:dir
-pitch       = P:ind:IND:name:dir
-*/
-            if (bIgnoreSave)
+            /* toe-pads = T:name:sInd:uInd:fInd:n/a
+
+                  joint = J:name:sInd:uInd:n/a :n/a
+                   grip = G:name:sInd:uInd:fInd:dir
+                   roll = R:name:sInd:uInd:fInd:dir
+                  pitch = P:name:sInd:uInd:fInd:dir
+                    yaw = Y:name:sInd:uInd:fInd:dir */
+
+            if (bIgnoreSave && !bForceSave)
                 return;
 
-            string save = string.Empty;
+            SaveData.Clear();
+
+            SaveData.Append($"&:{bIgnoreSave}:{bAutoDemo}:{bPlaneing}:{bStatorControl}:{bStatorTarget}\n");
 
             foreach (JointSet set in JsetBin)
             {
                 foreach (Joint joint in set.Joints)
-                    joint.Connection.CustomData = $"J:{joint.Index}:n/a:{joint.Name}";
+                    joint.Connection.CustomData = $"J:{joint.Name}:{set.Index}:{joint.Index}:-1:0:";
 
-                //Echo("yo");
-
-                for (int i = 0; i < 2; i++)
+                for (int i = 0; i < set.Feet.Length; i++)
                 {
-                    //Echo($"yo{i}_start");
-
                     if (set.Feet[i] == null)
                         continue;
 
                     if (set.Feet[i].Pitch != null)
-                        set.Feet[i].Pitch.Connection.CustomData = $"P:{set.Feet[i].Pitch.Index}:{i}:{set.Feet[i].Pitch.Name}:{set.Feet[i].PlaneDirections[0]}";
+                        set.Feet[i].Pitch.Connection.CustomData = $"P:{set.Feet[i].Pitch.Name}:{set.Index}:{set.Feet[i].Pitch.Index}:{i}:{set.Feet[i].Pitch.AuxDirection}";
+
+                    if (set.Feet[i].Yaw != null)
+                        set.Feet[i].Yaw.Connection.CustomData = $"Y:{set.Feet[i].Yaw.Name}:{set.Index}:{set.Feet[i].Yaw.Index}:{i}:{set.Feet[i].Yaw.AuxDirection}";
 
                     if (set.Feet[i].Roll != null)
-                        set.Feet[i].Roll.Connection.CustomData = $"R:{set.Feet[i].Roll.Index}:{i}:{set.Feet[i].Roll.Name}:{set.Feet[i].PlaneDirections[1]}";
+                        set.Feet[i].Roll.Connection.CustomData = $"R:{set.Feet[i].Roll.Name}:{set.Index}:{set.Feet[i].Roll.Index}:{i}:{set.Feet[i].Roll.AuxDirection}";
 
-                    for (int j = 0; j < set.Feet[i].Grips.Length; j++)
-                        set.Feet[i].Grips[j].CustomData = $"G:{j}:{i}:{set.Feet[i].Grips[j].CustomName}:{set.Feet[i].GripDirections[j]}";
+                    for (int j = 0; j < set.Feet[i].Toes.Length; j++)
+                        set.Feet[i].Toes[j].Connection.CustomData = $"G:{set.Feet[i].Toes[j].Name}:{set.Index}:{set.Feet[i].Toes[j].Index}:{i}:{set.Feet[i].Toes[j].AuxDirection}";
 
                     for (int j = 0; j < set.Feet[i].Pads.Length; j++)
-                        set.Feet[i].Pads[j].CustomData = $"T:{j}:{i}";
-
-                    //Echo($"yo{i}_end");
+                        set.Feet[i].Pads[j].CustomData = $"T:{set.Feet[i].Pads[j].Name}:{set.Index}:{j}:{i}:0";
                 }
 
-                save += $"#:{set.Name}:{set.GroupName}:{set.bIgnoreFeet}\n";
-
-                //Echo("yo");
+                SaveData.Append($"#:{set.Index}:{set.GroupName}:{set.Name}:{set.bIgnoreFeet}\n");
 
                 foreach (Sequence seq in set.Sequences)
                 {
@@ -2921,19 +2945,14 @@ pitch       = P:ind:IND:name:dir
                     {
                         foreach (JointFrame jFrame in frame.Jframes)
                         {
-                            save += $"%1:{jFrame.LerpPoint}\n";
+                            SaveData.Append($"%1:{jFrame.LerpPoint}\n");
                         }
-                        save += $"%0:{frame.Name}\n";
+                        SaveData.Append($"%0:{frame.Name}\n");
                     }
-                    save += $"$:{seq.Name}\n";
+                    SaveData.Append($"$:{seq.Name}:{seq.CurrentClockSpeed}\n");
                 }
-
-                //Echo("yo");
-
-                //save += $"#:{set.Name}:{set.bIgnoreFeet}\n";
             }
-
-            Me.CustomData = save;
+            Me.CustomData = SaveData.ToString();
         }
 
         #endregion
