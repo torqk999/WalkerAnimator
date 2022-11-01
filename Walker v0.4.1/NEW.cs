@@ -171,6 +171,33 @@ namespace IngameScript
             INTERRUPTED
         }
 
+        bool SequenceFramePrimer(IMyTextSurface panel)
+        {
+            if (panel == null)
+                return false;
+
+            DisplayManagerBuilder.Clear();
+
+            try
+            {
+                DisplayManagerBuilder.Append("Sample Walk Frames:\n");
+                for (int i = 0; i < CurrentWalk.Frames.Count; i++)
+                {
+                    DisplayManagerBuilder.Append($"{CurrentWalk.Frames[i].Name}:\n");
+
+                    for (int j = 0; j < CurrentWalk.Frames[i].Jframes.Length; j++)
+                        DisplayManagerBuilder.Append($"- {CurrentWalk.Frames[i].Jframes[j].Joint.Name} : {CurrentWalk.Frames[i].Jframes[j].LerpPoint}\n");
+
+                    DisplayManagerBuilder.Append("\n");
+                }
+            }
+
+            catch
+            { DisplayManagerBuilder.Append("FAIL POINT!"); }
+            panel.WriteText(DisplayManagerBuilder);
+            return true;
+        }
+
          */
 
         #region MAIN
@@ -181,7 +208,7 @@ namespace IngameScript
 
         const float Threshold = .2f;
         const float Scaling = .5f;
-        const float MaxSpeed = 10f;
+        const float MaxSpeed = 5f;
         const float ClockIncrmentMag = 0.005f;
         const float ClockSpeedDef = 0.010f;
         const float ClockSpeedMin = 0.005f;
@@ -529,13 +556,16 @@ namespace IngameScript
                     switch(Jtype)
                     {
                         case JointType.ROTOR:
-                            ActiveTarget = ActiveTarget > 360 ? ActiveTarget - 360 : ActiveTarget;
+                            ActiveTarget = ActiveTarget % 360;
+                            //ActiveTarget = ActiveTarget > 360 ? ActiveTarget - 360 : ActiveTarget;
                             ActiveTarget = ActiveTarget < 0 ? ActiveTarget + 360 : ActiveTarget;
                             break;
 
                         case JointType.HINGE:
+                            ActiveTarget = ActiveTarget % 360;
+                            ActiveTarget = ActiveTarget > 180 ? ActiveTarget - 360 : ActiveTarget;
                             ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
-                            ActiveTarget = ActiveTarget < -90 ? -90 : ActiveTarget;
+                            //ActiveTarget = ActiveTarget < -90 ? -90 : ActiveTarget;
                             break;
 
                         case JointType.PISTON:
@@ -663,7 +693,9 @@ namespace IngameScript
 
             public IMyTerminalBlock Plane;
             public MatrixD CurrentPlane;
-            public Vector3 BearingBuffer;
+            public MatrixD BufferPlane;
+            public Vector3 ForBuffer;
+            public Vector3 UpBuffer;
             public Vector3 AngleBuffer;
 
             public Foot[] Feet;
@@ -817,7 +849,6 @@ namespace IngameScript
                 foreach (Foot foot in Feet)
                 {
                     foot.TogglePlaneing(toggle);
-                    //foot.Planeing = toggle;
                 }
             }
 
@@ -832,6 +863,15 @@ namespace IngameScript
                 bool MatchStator(string cubeGridName, IMyMotorStator stator)
                 bool MatchPiston(string cubeGridName, IMyPistonBase piston)
                 */
+            }
+            void TransformVectorRelative(Vector3 right, Vector3 up, Vector3 forward, Vector3 D, ref Vector3 NV)
+            {
+                BufferPlane = CurrentPlane;
+                BufferPlane.Right = right;
+                BufferPlane.Forward = forward;
+                BufferPlane.Up = up;
+
+                TransformVectorRelative(BufferPlane, D, ref NV);
             }
             void TransformVectorRelative(MatrixD S, Vector3 D, ref Vector3 NV) // S = sourceBearing, D = WorldVectorDelta
             {
@@ -868,18 +908,43 @@ namespace IngameScript
                 NV.X = (float)((D.X - ((NV.Y * S.M21) + (NV.Z * S.M31))) / S.M11);
 
             }
+            void DeTransformVectorRelative(MatrixD S, double angX, double angY, ref Vector3 DV)
+            {
+                DV.X = (float)Math.Sin(angY);
+                DV.Y = (float)Math.Sin(angX);
+                DV.Z = (float)Math.Cos(angY);
+
+                DeTransformVectorRelative(S, DV, ref DV);
+            }
+            void DeTransformVectorRelative(MatrixD S, Vector3 N, ref Vector3 DV)
+            {
+                //Vector3D DV = new Vector3D();
+
+                /*
+                    x = Xa + Yd + Zg
+                    y = Xb + Ye + Zh
+                    z = Xc + Yf + Zi 
+                 */
+
+                DV.X = (float)((N.X * S.M11) + (N.Y * S.M21) + (N.Z * S.M31));
+
+                DV.Y = (float)((N.X * S.M12) + (N.Y * S.M22) + (N.Z * S.M32));
+
+                DV.Z = (float)((N.X * S.M13) + (N.Y * S.M23) + (N.Z * S.M33));
+
+                //return DV;
+            }
             public void UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 rotBuffer)
             {
                 if (Plane == null)
                     return;
 
-                
+                TransformVectorRelative(Plane.WorldMatrix, CurrentPlane.Forward, ref ForBuffer);
+                TransformVectorRelative(Plane.WorldMatrix.Right, Plane.WorldMatrix.Backward, Plane.WorldMatrix.Up, CurrentPlane.Up, ref UpBuffer);
 
-                TransformVectorRelative(Plane.WorldMatrix, CurrentPlane.Forward, ref BearingBuffer);
-
-                AngleBuffer.X = (float)Math.Atan2(BearingBuffer.Y, -BearingBuffer.Z);
-                AngleBuffer.Y = (float)Math.Atan2(BearingBuffer.X, -BearingBuffer.Z);
-                AngleBuffer.Z = (float)Math.Atan2(BearingBuffer.Y, BearingBuffer.X);
+                AngleBuffer.X = (float)(Math.Atan2(ForBuffer.Y, -ForBuffer.Z) * RAD2DEG);
+                AngleBuffer.Y = (float)(Math.Atan2(ForBuffer.X, -ForBuffer.Z) * RAD2DEG);
+                AngleBuffer.Z = (float)(Math.Atan2(UpBuffer.X, -UpBuffer.Z) * RAD2DEG);
 
                 foreach (Foot foot in Feet)
                 {
@@ -887,13 +952,13 @@ namespace IngameScript
                         continue;
 
                     if (foot.Planes[0] != null)
-                        foot.Planes[0].PlaneTarget = AngleBuffer.X;
+                        foot.Planes[0].PlaneTarget = AngleBuffer.X * foot.Planes[0].AuxDirection;
 
                     if (foot.Planes[1] != null)
-                        foot.Planes[1].PlaneTarget = AngleBuffer.Y;
+                        foot.Planes[1].PlaneTarget = AngleBuffer.Y * foot.Planes[1].AuxDirection;
 
                     if (foot.Planes[2] != null)
-                        foot.Planes[2].PlaneTarget = AngleBuffer.Z;
+                        foot.Planes[2].PlaneTarget = AngleBuffer.Z * foot.Planes[2].AuxDirection;
                 }
             }
         }
@@ -1387,7 +1452,7 @@ namespace IngameScript
             footBuffer[0] = new Foot(toes[0].ToArray(), grips[0].ToArray(), pitch[0], yaw[0], roll[0]);
             footBuffer[1] = new Foot(toes[1].ToArray(), grips[1].ToArray(), pitch[1], yaw[1], roll[1]);
 
-            return new JointSet(name, blockGroupName, setIndex, jointBuffer.ToArray(), footBuffer, control);
+            return new JointSet(name, blockGroupName, setIndex, jointBuffer.ToArray(), footBuffer, control, null, ignoreFeet);
         }
         void BuildToe(ref StringBuilder debugBin, ref List<IMyLandingGear>[] toeBuffer, int setIndex, IMyLandingGear gear)
         {
@@ -1467,7 +1532,7 @@ namespace IngameScript
                 case "P":
                     if (footIndex < 0 || footIndex >= pitch.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name);
+                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
                     pitch[footIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
@@ -1475,7 +1540,7 @@ namespace IngameScript
                 case "Y":
                     if (footIndex < 0 || footIndex >= yaw.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name);
+                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
                     yaw[footIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
@@ -1483,7 +1548,7 @@ namespace IngameScript
                 case "R":
                     if (footIndex < 0 || footIndex >= roll.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name);
+                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
                     roll[footIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
@@ -1861,6 +1926,7 @@ namespace IngameScript
 
                 case 3:
                     bPlaneing = !bPlaneing;
+                    CurrentWalkSet.TogglePlaneing(bPlaneing);
                     break;
 
                 case 4:
@@ -1893,12 +1959,12 @@ namespace IngameScript
             switch (button)
             {
                 case 1:
-                    DebugBinStatic.Append($"Lock Left Foot Success: {CurrentWalkSet.InitializeGrip(ref DebugBinStatic)}");
+                    DebugBinStatic.Append($"Lock Left Foot Success: {CurrentWalkSet.InitializeGrip(ref DebugBinStatic)}\n");
                     DebugScreens[1].WriteText(DebugBinStatic.ToString());
                     break;
 
                 case 2:
-                    DebugBinStatic.Append($"Lock Right Foot Success: {CurrentWalkSet.InitializeGrip(ref DebugBinStatic, false)}");
+                    DebugBinStatic.Append($"Lock Right Foot Success: {CurrentWalkSet.InitializeGrip(ref DebugBinStatic, false)}\n");
                     DebugScreens[1].WriteText(DebugBinStatic.ToString());
                     break;
 
@@ -2450,7 +2516,7 @@ namespace IngameScript
         void DisplayManager()
         {
             Echo($"JointLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
-            Echo($"SequenceFramePrimer: {SequenceFramePrimer(DebugScreens[0])}");
+            //Echo($"SequenceFramePrimer: {SequenceFramePrimer(DebugScreens[0])}");
             Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
             Echo($"DebugPlus!: {DebugPlus(DebugScreens[5])}");
             Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
@@ -2501,33 +2567,10 @@ namespace IngameScript
                     $"Right Literal:\n{L.Right.X:0.###}:{L.Right.Y:0.###}:{L.Right.Z:0.###}\n" +
                     $"Up Target:\n{T.Up.X:0.###}:{T.Up.Y:0.###}:{T.Up.Z:0.###}\n" +
                     $"Up Literal:\n{L.Up.X:0.###}:{L.Up.Y:0.###}:{L.Up.Z:0.###}\n" +
-                    $"Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}");
-            }
-
-            catch
-            { DisplayManagerBuilder.Append("FAIL POINT!"); }
-            panel.WriteText(DisplayManagerBuilder);
-            return true;
-        }
-        bool SequenceFramePrimer(IMyTextSurface panel)
-        {
-            if (panel == null)
-                return false;
-
-            DisplayManagerBuilder.Clear();
-
-            try
-            {
-                DisplayManagerBuilder.Append("Sample Walk Frames:\n");
-                for (int i = 0; i < CurrentWalk.Frames.Count; i++)
-                {
-                    DisplayManagerBuilder.Append($"{CurrentWalk.Frames[i].Name}:\n");
-
-                    for (int j = 0; j < CurrentWalk.Frames[i].Jframes.Length; j++)
-                        DisplayManagerBuilder.Append($"- {CurrentWalk.Frames[i].Jframes[j].Joint.Name} : {CurrentWalk.Frames[i].Jframes[j].LerpPoint}\n");
-
-                    DisplayManagerBuilder.Append("\n");
-                }
+                    $"Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n" +
+                    $"Finals:\n{CurrentWalkSet.Feet[0].Planes[0].ActiveTarget:0.###}\n" +
+                    $"{CurrentWalkSet.Feet[0].Planes[1].ActiveTarget:0.###}\n" +
+                    $"{CurrentWalkSet.Feet[0].Planes[2].ActiveTarget:0.###}\n");
             }
 
             catch
@@ -2674,7 +2717,7 @@ namespace IngameScript
             }
             else
             {
-                DebugBinStatic.Append("Load Success!");
+                DebugBinStatic.Append("Load Success!\n");
                 bLoaded = true;
             }
 
