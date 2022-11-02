@@ -198,22 +198,59 @@ namespace IngameScript
             return true;
         }
 
+        bool JointLiveStatus(IMyTextSurface panel)
+        {
+            if (panel == null)
+                return false;
+
+            DisplayManagerBuilder.Clear();
+
+            try
+            {
+                DisplayManagerBuilder.Append($"CurrentSet Joints(Name:Pos:Vel) | {CurrentWalkSet.Joints.Length}\n");
+
+                for (int i = 0; i < CurrentWalkSet.Joints.Length; i++)
+                {
+                    DisplayManagerBuilder.Append($"{CurrentWalkSet.Joints[i].Name} : {CurrentWalkSet.Joints[i].ReturnCurrentStatorPosition()} : {CurrentWalkSet.Joints[i].TargetVelocity}\n");
+                }
+            }
+
+            catch
+            { DisplayManagerBuilder.Append("FAIL POINT!"); }
+            panel.WriteText(DisplayManagerBuilder);
+            return true;
+        }
+
+        void TogglePlaneDirection(int dir)
+        {
+            try
+            {
+                foreach (Foot foot in CurrentWalkSet.Feet)
+                    if (foot.Locked && foot.Planes[dir] != null)
+                        foot.Planes[dir].AuxDirection *= -1;
+            }
+            catch
+            {
+                DebugBinStatic.Append($"Plane direction {dir} toggle failed");
+            }
+        }
          */
 
         #region MAIN
-
         const string SampleLegsGroupName = "ALL_JOINTS";
         const string CockpitName = "PILOT";
         const string LCDgroupName = "LCDS";
 
         const float Threshold = .2f;
-        const float Scaling = .5f;
+        const float VScalar = .5f;
+        const float MaxAccel = 0.1f;
         const float MaxSpeed = 5f;
-        const float ClockIncrmentMag = 0.005f;
-        const float ClockSpeedDef = 0.010f;
-        const float ClockSpeedMin = 0.005f;
-        const float ClockSpeedMax = 0.100f;
+        const float ClockIncrmentMag = 0.0005f;
+        const float ClockSpeedDef = 0.005f;
+        const float ClockSpeedMin = 0.001f;
+        const float ClockSpeedMax = 0.020f;
         const float TriggerCap = 0.6f;
+        const float LookScalar = 0.05f;
 
         const int SaveBlockCountSize = 6;
         const double RAD2DEG = 180 / Math.PI;
@@ -228,6 +265,7 @@ namespace IngameScript
         JointSet CurrentWalkSet;
 
         ClockMode AnimationState;
+        ClockMode OldWalkState;
 
         bool bIgnoreSave = true;
         bool bForceSave = false;
@@ -237,7 +275,6 @@ namespace IngameScript
         bool bSnapping = true;
         bool bLoaded = false;
         bool bAutoDemo = false;
-
         bool bStatorTarget = true;
         bool bStatorControl = true;
 
@@ -245,16 +282,11 @@ namespace IngameScript
         int LastMechInput;
         int[] LastLibraryInput = new int[2];
 
-        #region GUI SECTION
-        IMyTextPanel ButtonPanel;
-        IMyTextPanel GUIPanel;
-        IMyTextPanel SplashPanel;
-
-        bool bCapLines = true;
-
+        #region GUI VARS
         GUIMode CurrentGUIMode = GUIMode.MAIN;
         GUILayer CurrentGUILayer = GUILayer.JSET;
 
+        bool bCapLines = true;
         int CursorIndex = 0;
         int LineBufferSize = 6;
         int[] SelObjIndex = new int[] { 0, 0, 0, 0 };
@@ -312,27 +344,29 @@ namespace IngameScript
             "Decrease speed",
             "Main Menu"
         };
-
-        string[] InputLabels =
+        static readonly string[] InputLabels =
         {
             "w",
             "s",
             "a",
             "d"
         };
+
         string MainText = "Mech Control v0.4.4";
         string InfoText = "(InfoScreen)";
         string[] Cursor = new string[] { "  ", "->" };
         #endregion
 
         #region STRING BUILDERS & SCREENS
+        IMyTextPanel ButtonPanel;
+        IMyTextPanel GUIPanel;
+        IMyTextPanel SplashPanel;
         IMyTextSurface[] CockPitScreens = new IMyTextSurface[3];
         List<IMyTextPanel> DebugScreens = new List<IMyTextPanel>();
         StringBuilder DebugBinStream;
         StringBuilder DebugBinStatic;
         StringBuilder DisplayManagerBuilder;
         StringBuilder SaveData;
-        ClockMode OldWalkState;
         #endregion
 
         #region SAMPLE OBJECTS
@@ -356,9 +390,6 @@ namespace IngameScript
             "L_TOES",
             "R_TOES"
         };
-
-        JointSet SampleLegs;
-        Sequence SampleWalk;
         #endregion
 
         #region ENUMS
@@ -427,7 +458,8 @@ namespace IngameScript
 
             public int Direction;
             public double CorrectionMag;
-            public double TargetVelocity;
+            public double StatorVelocity;
+            double OldVelocity;
 
             public Joint(IMyMechanicalConnectionBlock mechBlock, int index, string name = "default", bool isGrip = false, int auxDir = 1)
             {
@@ -486,7 +518,6 @@ namespace IngameScript
                     lerpTime < 0)
                     return;
 
-                //bLerping = true;
                 float target;
 
                 if (Jtype == JointType.ROTOR)
@@ -504,8 +535,6 @@ namespace IngameScript
                     target = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
 
                 AnimTarget = target;
-
-                //debugBin += $"AT: {AnimTarget}\n";
             }
             public void UpdateJoint(bool activeTargetTracking, double delta, ref StringBuilder debugStream)
             {
@@ -515,19 +544,19 @@ namespace IngameScript
                 {
                     case JointType.ROTOR:
                         UpdateRotorVector(ref debugStream);
-                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
+                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdateStator(activeTargetTracking);
                         break;
 
                     case JointType.HINGE:
                         UpdateHingeVector(ref debugStream);
-                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
+                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdateStator(activeTargetTracking);
                         break;
 
                     case JointType.PISTON:
                         UpdatePistonVector(ref debugStream);
-                        UpdateTargetStatorVelocity(ref debugStream, activeTargetTracking);
+                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdatePiston(activeTargetTracking);
                         break;
                 }  
@@ -557,7 +586,6 @@ namespace IngameScript
                     {
                         case JointType.ROTOR:
                             ActiveTarget = ActiveTarget % 360;
-                            //ActiveTarget = ActiveTarget > 360 ? ActiveTarget - 360 : ActiveTarget;
                             ActiveTarget = ActiveTarget < 0 ? ActiveTarget + 360 : ActiveTarget;
                             break;
 
@@ -565,7 +593,6 @@ namespace IngameScript
                             ActiveTarget = ActiveTarget % 360;
                             ActiveTarget = ActiveTarget > 180 ? ActiveTarget - 360 : ActiveTarget;
                             ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
-                            //ActiveTarget = ActiveTarget < -90 ? -90 : ActiveTarget;
                             break;
 
                         case JointType.PISTON:
@@ -596,42 +623,44 @@ namespace IngameScript
                 Direction = Math.Sign(CorrectionMag);
                 CorrectionMag = Math.Abs(CorrectionMag);
             }
-            void UpdateTargetStatorVelocity(ref StringBuilder debugStream, bool active)
+            void UpdateStatorVelocity(ref StringBuilder debugStream, bool active)
             {
                 if (active)
                 {
+                    OldVelocity = StatorVelocity;
                     if (IsGrip)
                     {
-                        TargetVelocity = MaxSpeed * AuxDirection * (Gripping ? 1 : -1);
+                        StatorVelocity = MaxSpeed * AuxDirection * (Gripping ? 1 : -1);
                     }
                     else
                     {
-                        double scale = CorrectionMag * Scaling;
+                        double scale = CorrectionMag * VScalar;
                         //scale = Math.Pow(scale, 3);
-                        TargetVelocity = Direction * scale;
+                        StatorVelocity = Direction * scale;
 
                         if (scale < Threshold)
-                            TargetVelocity = 0;
+                            StatorVelocity = 0;
 
-                        TargetVelocity = (Math.Abs(TargetVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(TargetVelocity) : TargetVelocity;
+                        StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > MaxAccel) ? StatorVelocity + (MaxAccel * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
+                        StatorVelocity = (Math.Abs(StatorVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(StatorVelocity) : StatorVelocity;
                     }
                 }
                 else
-                    TargetVelocity = 0;
+                    StatorVelocity = 0;
             }
             void UpdateStator(bool active)
             {
                 if (Stator == null)
                     return;
 
-                Stator.SetValueFloat("Velocity", (float)TargetVelocity);
+                Stator.SetValueFloat("Velocity", (float)StatorVelocity);
             }
             void UpdatePiston(bool active)
             {
                 if (Piston == null)
                     return;
 
-                Piston.SetValueFloat("Velocity", (float)TargetVelocity);
+                Piston.SetValueFloat("Velocity", (float)StatorVelocity);
             }
         }
         class JointFrame
@@ -697,6 +726,7 @@ namespace IngameScript
             public Vector3 ForBuffer;
             public Vector3 UpBuffer;
             public Vector3 AngleBuffer;
+            public Vector3 OffsetBuffer;
 
             public Foot[] Feet;
             public Joint[] Joints;
@@ -864,14 +894,11 @@ namespace IngameScript
                 bool MatchPiston(string cubeGridName, IMyPistonBase piston)
                 */
             }
-            void TransformVectorRelative(Vector3 right, Vector3 up, Vector3 forward, Vector3 D, ref Vector3 NV)
+            void UpPitchMatrix(MatrixD S, ref MatrixD T)
             {
-                BufferPlane = CurrentPlane;
-                BufferPlane.Right = right;
-                BufferPlane.Forward = forward;
-                BufferPlane.Up = up;
-
-                TransformVectorRelative(BufferPlane, D, ref NV);
+                T = S;
+                T.Forward = S.Up;
+                T.Up = S.Backward;
             }
             void TransformVectorRelative(MatrixD S, Vector3 D, ref Vector3 NV) // S = sourceBearing, D = WorldVectorDelta
             {
@@ -918,21 +945,19 @@ namespace IngameScript
             }
             void DeTransformVectorRelative(MatrixD S, Vector3 N, ref Vector3 DV)
             {
-                //Vector3D DV = new Vector3D();
-
                 /*
                     x = Xa + Yd + Zg
                     y = Xb + Ye + Zh
                     z = Xc + Yf + Zi 
                  */
 
+
+
                 DV.X = (float)((N.X * S.M11) + (N.Y * S.M21) + (N.Z * S.M31));
 
                 DV.Y = (float)((N.X * S.M12) + (N.Y * S.M22) + (N.Z * S.M32));
 
                 DV.Z = (float)((N.X * S.M13) + (N.Y * S.M23) + (N.Z * S.M33));
-
-                //return DV;
             }
             public void UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 rotBuffer)
             {
@@ -940,11 +965,23 @@ namespace IngameScript
                     return;
 
                 TransformVectorRelative(Plane.WorldMatrix, CurrentPlane.Forward, ref ForBuffer);
-                TransformVectorRelative(Plane.WorldMatrix.Right, Plane.WorldMatrix.Backward, Plane.WorldMatrix.Up, CurrentPlane.Up, ref UpBuffer);
+                UpPitchMatrix(Plane.WorldMatrix, ref BufferPlane);
+                TransformVectorRelative(BufferPlane, CurrentPlane.Up, ref UpBuffer);
+                //TransformVectorRelative(Plane.WorldMatrix.Right, Plane.WorldMatrix.Backward, Plane.WorldMatrix.Up, CurrentPlane.Up, ref UpBuffer);
 
                 AngleBuffer.X = (float)(Math.Atan2(ForBuffer.Y, -ForBuffer.Z) * RAD2DEG);
                 AngleBuffer.Y = (float)(Math.Atan2(ForBuffer.X, -ForBuffer.Z) * RAD2DEG);
                 AngleBuffer.Z = (float)(Math.Atan2(UpBuffer.X, -UpBuffer.Z) * RAD2DEG);
+
+                // O_O //
+                OffsetBuffer.X += rotBuffer.X;
+                OffsetBuffer.Y += rotBuffer.Y;
+                OffsetBuffer.Z += rotBuffer.Z;
+
+                AngleBuffer.X += OffsetBuffer.X;
+                AngleBuffer.Y += OffsetBuffer.Y;
+                AngleBuffer.Z += OffsetBuffer.Z;
+                //*smh*//
 
                 foreach (Foot foot in Feet)
                 {
@@ -1302,10 +1339,12 @@ namespace IngameScript
         }
         #endregion
 
-        /// SAMPLE CONSTRUCTIONS /////////////////
+        #region CONSTRUCTIONS
         bool SampleLegsConstructor(ref StringBuilder debugBin)
         {
             JsetBin.Clear();
+            JointSet SampleLegs;
+            Sequence SampleWalk;
 
             Foot[] feet = new Foot[2];
 
@@ -1385,8 +1424,6 @@ namespace IngameScript
 
             return true;
         }
-
-        /// RUNTIME CONSTRUCTIONS ////////////////
         JointSet ConstructJointSet(ref StringBuilder debugBin, IMyShipController control, int setIndex, string blockGroupName = null, string name = null, bool ignoreFeet = true)
         {
             JointSet output = null;
@@ -1568,26 +1605,108 @@ namespace IngameScript
                     break;
             }
         }
+        #endregion
 
         #region PLAYER INPUTS
+        void ControlInput()
+        {
+            if (Control == null)
+            {
+                RotationBuffer = Vector3.Zero;
+                return;
+            }
+
+            switch (CurrentGUIMode)
+            {
+                case GUIMode.LIBRARY:
+                    switch ((int)Control.MoveIndicator.Z)
+                    {
+                        case -1:
+                            if (LastLibraryInput[0] == -1)
+                                break;
+                            LastLibraryInput[0] = -1;
+                            GUINavigation(GUINav.UP);
+                            GUIUpdate();
+                            break;
+
+                        case 0:
+                            if (LastLibraryInput[0] == 0)
+                                break;
+                            LastLibraryInput[0] = 0;
+                            break;
+
+                        case 1:
+                            if (LastLibraryInput[0] == 1)
+                                break;
+                            LastLibraryInput[0] = 1;
+                            GUINavigation(GUINav.DOWN);
+                            GUIUpdate();
+                            break;
+                    }
+                    switch ((int)Control.MoveIndicator.X)
+                    {
+                        case -1:
+                            if (LastLibraryInput[1] == -1)
+                                break;
+                            LastLibraryInput[1] = -1;
+                            GUINavigation(GUINav.BACK);
+                            GUIUpdate();
+                            break;
+
+                        case 0:
+                            if (LastLibraryInput[1] == 0)
+                                break;
+                            LastLibraryInput[1] = 0;
+                            break;
+
+                        case 1:
+                            if (LastLibraryInput[1] == 1)
+                                break;
+                            LastLibraryInput[1] = 1;
+                            GUINavigation(GUINav.SELECT);
+                            GUIUpdate();
+                            break;
+                    }
+                    break;
+
+                case GUIMode.CONTROL:
+                    RotationBuffer.X = LookScalar * Control.RotationIndicator.X;
+                    RotationBuffer.Y = LookScalar * Control.RotationIndicator.Y;
+                    RotationBuffer.Z = LookScalar * Control.RollIndicator;
+                    switch ((int)Control.MoveIndicator.Z)
+                    {
+                        case 1:
+                            if (LastMechInput == -1)
+                                break;
+                            LastMechInput = -1;
+                            CurrentWalk.UpdateClockMode(ClockMode.REV);
+                            bWalking = true;
+                            break;
+
+                        case 0:
+                            if (LastMechInput == 0)
+                                break;
+                            LastMechInput = 0;
+                            CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
+                            bWalking = false;
+                            break;
+
+                        case -1:
+                            if (LastMechInput == 1)
+                                break;
+                            LastMechInput = 1;
+                            CurrentWalk.UpdateClockMode(ClockMode.FOR);
+                            bWalking = true;
+                            break;
+                    }
+                    break;
+            }
+        }
         void ToggleAnimations(ClockMode mode)
         {
             foreach (Sequence seq in Animations)
             {
                 seq.ToggleSequence(mode);
-            }
-        }
-        void TogglePlaneDirection(int dir)
-        {
-            try
-            {
-                foreach (Foot foot in CurrentWalkSet.Feet)
-                    if (foot.Locked && foot.Planes[dir] != null)
-                        foot.Planes[dir].AuxDirection *= -1;
-            }
-            catch
-            {
-                DebugBinStatic.Append($"Plane direction {dir} toggle failed");
             }
         }
         void ZeroCurrentWalk()
@@ -1612,7 +1731,7 @@ namespace IngameScript
         }
         #endregion
 
-        #region GUI COMPONENTS
+        #region GUI METHODS
         void GUIUpdate()
         {
             if (ButtonPanel != null && GUIPanel != null)
@@ -2126,8 +2245,6 @@ namespace IngameScript
                 SelectedLineIndex--;
 
             RefreshSelection();
-
-            //JointBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
         }
         void RefreshSelection()
         {
@@ -2373,100 +2490,7 @@ namespace IngameScript
         #endregion
 
         #region UPATES 
-        void ControlInputManager()
-        {
-            if (Control == null)
-            {
-                RotationBuffer = Vector3.Zero;
-                return;
-            }
-
-            switch(CurrentGUIMode)
-            {
-                case GUIMode.LIBRARY:
-                    switch ((int)Control.MoveIndicator.Z)
-                    {
-                        case -1:
-                            if (LastLibraryInput[0] == -1)
-                                break;
-                            LastLibraryInput[0] = -1;
-                            GUINavigation(GUINav.UP);
-                            GUIUpdate();
-                            break;
-
-                        case 0:
-                            if (LastLibraryInput[0] == 0)
-                                break;
-                            LastLibraryInput[0] = 0;
-                            break;
-
-                        case 1:
-                            if (LastLibraryInput[0] == 1)
-                                break;
-                            LastLibraryInput[0] = 1;
-                            GUINavigation(GUINav.DOWN);
-                            GUIUpdate();
-                            break;
-                    }
-                    switch ((int)Control.MoveIndicator.X)
-                    {
-                        case -1:
-                            if (LastLibraryInput[1] == -1)
-                                break;
-                            LastLibraryInput[1] = -1;
-                            GUINavigation(GUINav.BACK);
-                            GUIUpdate();
-                            break;
-
-                        case 0:
-                            if (LastLibraryInput[1] == 0)
-                                break;
-                            LastLibraryInput[1] = 0;
-                            break;
-
-                        case 1:
-                            if (LastLibraryInput[1] == 1)
-                                break;
-                            LastLibraryInput[1] = 1;
-                            GUINavigation(GUINav.SELECT);
-                            GUIUpdate();
-                            break;
-                    }
-                    break;
-
-                case GUIMode.CONTROL:
-                    RotationBuffer.X = Control.RotationIndicator.X;
-                    RotationBuffer.Y = Control.RotationIndicator.Y;
-                    RotationBuffer.Z = Control.RollIndicator;
-                    switch ((int)Control.MoveIndicator.Z)
-                    {
-                        case 1:
-                            if (LastMechInput == -1)
-                                break;
-                            LastMechInput = -1;
-                            CurrentWalk.UpdateClockMode(ClockMode.REV);
-                            bWalking = true;
-                            break;
-
-                        case 0:
-                            if (LastMechInput == 0)
-                                break;
-                            LastMechInput = 0;
-                            CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
-                            bWalking = false;
-                            break;
-
-                        case -1:
-                            if (LastMechInput == 1)
-                                break;
-                            LastMechInput = 1;
-                            CurrentWalk.UpdateClockMode(ClockMode.FOR);
-                            bWalking = true;
-                            break;
-                    }
-                    break;
-            }
-        }
+        
         void WalkManager()
         {
             if (CurrentWalkSet == null)
@@ -2515,8 +2539,7 @@ namespace IngameScript
         }
         void DisplayManager()
         {
-            Echo($"JointLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
-            //Echo($"SequenceFramePrimer: {SequenceFramePrimer(DebugScreens[0])}");
+            Echo($"PlaneLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
             Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
             Echo($"DebugPlus!: {DebugPlus(DebugScreens[5])}");
             Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
@@ -2524,28 +2547,7 @@ namespace IngameScript
         #endregion
 
         #region DISPLAY
-        bool JointLiveStatus(IMyTextSurface panel)
-        {
-            if (panel == null)
-                return false;
-
-            DisplayManagerBuilder.Clear();
-
-            try
-            {
-                DisplayManagerBuilder.Append($"CurrentSet Joints(Name:Pos:Vel) | {CurrentWalkSet.Joints.Length}\n");
-
-                for (int i = 0; i < CurrentWalkSet.Joints.Length; i++)
-                {
-                    DisplayManagerBuilder.Append($"{CurrentWalkSet.Joints[i].Name} : {CurrentWalkSet.Joints[i].ReturnCurrentStatorPosition()} : {CurrentWalkSet.Joints[i].TargetVelocity}\n");
-                }
-            }
-
-            catch
-            { DisplayManagerBuilder.Append("FAIL POINT!"); }
-            panel.WriteText(DisplayManagerBuilder);
-            return true;
-        }
+        
         bool PlaneingLiveStatus(IMyTextSurface panel)
         {
             if (panel == null)
@@ -2843,7 +2845,7 @@ namespace IngameScript
                     break;
             }
 
-            ControlInputManager();
+            ControlInput();
             WalkManager();
             AnimationManager();
             StatorManager();
