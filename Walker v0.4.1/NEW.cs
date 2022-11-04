@@ -243,14 +243,15 @@ namespace IngameScript
 
         const float Threshold = .2f;
         const float VScalar = .5f;
-        const float MaxAccel = 0.1f;
-        const float MaxSpeed = 5f;
+        const float MaxAccel = 0.3f;
+        const float MaxSpeed = 6f;
         const float ClockIncrmentMag = 0.0005f;
         const float ClockSpeedDef = 0.005f;
         const float ClockSpeedMin = 0.001f;
         const float ClockSpeedMax = 0.020f;
         const float TriggerCap = 0.6f;
-        const float LookScalar = 0.05f;
+        const float LookScalar = 0.005f;
+        const float CorrectScalar = 1f;
 
         const int SaveBlockCountSize = 6;
         const double RAD2DEG = 180 / Math.PI;
@@ -641,7 +642,7 @@ namespace IngameScript
                         if (scale < Threshold)
                             StatorVelocity = 0;
 
-                        StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > MaxAccel) ? StatorVelocity + (MaxAccel * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
+                        StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > MaxAccel) ? OldVelocity + (MaxAccel * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
                         StatorVelocity = (Math.Abs(StatorVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(StatorVelocity) : StatorVelocity;
                     }
                 }
@@ -723,10 +724,12 @@ namespace IngameScript
             public IMyTerminalBlock Plane;
             public MatrixD CurrentPlane;
             public MatrixD BufferPlane;
-            public Vector3 ForBuffer;
-            public Vector3 UpBuffer;
-            public Vector3 AngleBuffer;
+            //public Vector3 ForBuffer;
+            //public Vector3 UpBuffer;
+            public Vector3 PlaneBuffer;
             public Vector3 OffsetBuffer;
+            public Vector3 CorrectBuffer;
+            public Vector3 Xbuff, Ybuff, Zbuff;
 
             public Foot[] Feet;
             public Joint[] Joints;
@@ -894,13 +897,7 @@ namespace IngameScript
                 bool MatchPiston(string cubeGridName, IMyPistonBase piston)
                 */
             }
-            void UpPitchMatrix(MatrixD S, ref MatrixD T)
-            {
-                T = S;
-                T.Forward = S.Up;
-                T.Up = S.Backward;
-            }
-            void TransformVectorRelative(MatrixD S, Vector3 D, ref Vector3 NV) // S = sourceBearing, D = WorldVectorDelta
+            void TransformVectorRelative(ref MatrixD S, Vector3 D, ref Vector3 RV) // S = sourceBearing, D = WorldVectorDelta
             {
                 /* X,Y,Z = Normalized Vector Unit Coefficients
                  * x,y,z = Delta Target Vector (raw World GPS)
@@ -918,32 +915,32 @@ namespace IngameScript
                 // Z = (d(bz - cy) + e(cx - az) + f(ay - bx)) / (d(bi - ch) + e(cg - ai) + f(ah - bg))
 
                 // Z =         (d     * ((b     * z)   - (c     * y))   + e     * ((c     * x)   - (a     * z))   + f     * ((a     * y)   - (b     * x)))   / (d     * ((b     * i)     - (c     * h))     + e     * ((c     * g)     - (a     * i))     + f     * ((a     * h)     - (b     * g)))
-                NV.Z = (float)((S.M21 * ((S.M12 * D.Z) - (S.M13 * D.Y)) + S.M22 * ((S.M13 * D.X) - (S.M11 * D.Z)) + S.M23 * ((S.M11 * D.Y) - (S.M12 * D.X))) / (S.M21 * ((S.M12 * S.M33) - (S.M13 * S.M32)) + S.M22 * ((S.M13 * S.M31) - (S.M11 * S.M33)) + S.M23 * ((S.M11 * S.M32) - (S.M12 * S.M31))));
+                RV.Z = (float)((S.M21 * ((S.M12 * D.Z) - (S.M13 * D.Y)) + S.M22 * ((S.M13 * D.X) - (S.M11 * D.Z)) + S.M23 * ((S.M11 * D.Y) - (S.M12 * D.X))) / (S.M21 * ((S.M12 * S.M33) - (S.M13 * S.M32)) + S.M22 * ((S.M13 * S.M31) - (S.M11 * S.M33)) + S.M23 * ((S.M11 * S.M32) - (S.M12 * S.M31))));
 
 
                 // Y = (Z(hc - ib) + zb - yc) / (fb - ec)
                 // Y = (Z(gb - ha) + ya - xb) / (ea - db)
 
                 // Y =         (Z    * ((h     * c)     - (i     * b))     + (z   * b)     - (y   * c))     / ((f     * b)     - (e     * c))
-                NV.Y = (float)((NV.Z * ((S.M32 * S.M13) - (S.M33 * S.M12)) + (D.Z * S.M12) - (D.Y * S.M13)) / ((S.M23 * S.M12) - (S.M22 * S.M13)));
+                RV.Y = (float)((RV.Z * ((S.M32 * S.M13) - (S.M33 * S.M12)) + (D.Z * S.M12) - (D.Y * S.M13)) / ((S.M23 * S.M12) - (S.M22 * S.M13)));
 
                 // X = (x - (Yd + Zg)) / a
                 // X = (y - (Ye + Zh)) / b
                 // X = (z - (Yf + Zi)) / c
 
                 // X =         (x   - ((Y    * d)     + (Z    * g)))     / a
-                NV.X = (float)((D.X - ((NV.Y * S.M21) + (NV.Z * S.M31))) / S.M11);
+                RV.X = (float)((D.X - ((RV.Y * S.M21) + (RV.Z * S.M31))) / S.M11);
 
             }
-            void DeTransformVectorRelative(MatrixD S, double angX, double angY, ref Vector3 DV)
+            void DeTransformVectorRelative(ref MatrixD S, float angX, float angY, ref Vector3 DV)
             {
                 DV.X = (float)Math.Sin(angY);
                 DV.Y = (float)Math.Sin(angX);
                 DV.Z = (float)Math.Cos(angY);
 
-                DeTransformVectorRelative(S, DV, ref DV);
+                DeTransformVectorRelative(ref S, DV, ref DV);
             }
-            void DeTransformVectorRelative(MatrixD S, Vector3 N, ref Vector3 DV)
+            void DeTransformVectorRelative(ref MatrixD S, Vector3 R, ref Vector3 DV)
             {
                 /*
                     x = Xa + Yd + Zg
@@ -951,29 +948,26 @@ namespace IngameScript
                     z = Xc + Yf + Zi 
                  */
 
-
-
-                DV.X = (float)((N.X * S.M11) + (N.Y * S.M21) + (N.Z * S.M31));
-
-                DV.Y = (float)((N.X * S.M12) + (N.Y * S.M22) + (N.Z * S.M32));
-
-                DV.Z = (float)((N.X * S.M13) + (N.Y * S.M23) + (N.Z * S.M33));
+                DV.X = (float)((R.X * S.M11) + (R.Y * S.M21) + (R.Z * S.M31));
+                DV.Y = (float)((R.X * S.M12) + (R.Y * S.M22) + (R.Z * S.M32));
+                DV.Z = (float)((R.X * S.M13) + (R.Y * S.M23) + (R.Z * S.M33));
             }
             public void UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 rotBuffer)
             {
                 if (Plane == null)
                     return;
 
-                TransformVectorRelative(Plane.WorldMatrix, CurrentPlane.Forward, ref ForBuffer);
-                UpPitchMatrix(Plane.WorldMatrix, ref BufferPlane);
-                TransformVectorRelative(BufferPlane, CurrentPlane.Up, ref UpBuffer);
-                //TransformVectorRelative(Plane.WorldMatrix.Right, Plane.WorldMatrix.Backward, Plane.WorldMatrix.Up, CurrentPlane.Up, ref UpBuffer);
+                // Player input
+                //CurrentPlane = MatrixD.Transform(CurrentPlane, Quaternion.CreateFromYawPitchRoll(rotBuffer.Y, rotBuffer.X, rotBuffer.Z));
+                PlayerInput(ref CurrentPlane, ref BufferPlane, ref rotBuffer);
 
-                AngleBuffer.X = (float)(Math.Atan2(ForBuffer.Y, -ForBuffer.Z) * RAD2DEG);
-                AngleBuffer.Y = (float)(Math.Atan2(ForBuffer.X, -ForBuffer.Z) * RAD2DEG);
-                AngleBuffer.Z = (float)(Math.Atan2(UpBuffer.X, -UpBuffer.Z) * RAD2DEG);
+                // Auto-plane
+                TransformMatrixRelative(Plane.WorldMatrix, ref CurrentPlane, ref BufferPlane);
+                MatrixToRotations(ref BufferPlane, ref CorrectBuffer);
+                PlaneBuffer = 2 * CorrectBuffer;
 
                 // O_O //
+                /*
                 OffsetBuffer.X += rotBuffer.X;
                 OffsetBuffer.Y += rotBuffer.Y;
                 OffsetBuffer.Z += rotBuffer.Z;
@@ -981,6 +975,7 @@ namespace IngameScript
                 AngleBuffer.X += OffsetBuffer.X;
                 AngleBuffer.Y += OffsetBuffer.Y;
                 AngleBuffer.Z += OffsetBuffer.Z;
+                */
                 //*smh*//
 
                 foreach (Foot foot in Feet)
@@ -989,14 +984,39 @@ namespace IngameScript
                         continue;
 
                     if (foot.Planes[0] != null)
-                        foot.Planes[0].PlaneTarget = AngleBuffer.X * foot.Planes[0].AuxDirection;
+                        foot.Planes[0].PlaneTarget = PlaneBuffer.X * foot.Planes[0].AuxDirection;
 
                     if (foot.Planes[1] != null)
-                        foot.Planes[1].PlaneTarget = AngleBuffer.Y * foot.Planes[1].AuxDirection;
+                        foot.Planes[1].PlaneTarget = PlaneBuffer.Y * foot.Planes[1].AuxDirection;
 
                     if (foot.Planes[2] != null)
-                        foot.Planes[2].PlaneTarget = AngleBuffer.Z * foot.Planes[2].AuxDirection;
+                        foot.Planes[2].PlaneTarget = PlaneBuffer.Z * foot.Planes[2].AuxDirection;
                 }
+            }
+            void TransformMatrixRelative(MatrixD S, ref MatrixD T, ref MatrixD R)
+            {
+                TransformVectorRelative(ref S, T.Right, ref Xbuff);
+                TransformVectorRelative(ref S, T.Up, ref Ybuff);
+                TransformVectorRelative(ref S, T.Forward, ref Zbuff);
+
+                R.Right = Xbuff;
+                R.Up = Ybuff;
+                R.Forward = Zbuff;
+            }
+            void MatrixToRotations(ref MatrixD S, ref Vector3 rots)
+            {
+                rots.X = (float)(Math.Atan2(S.Forward.Y, -S.Forward.Z) * RAD2DEG);
+                rots.Y = (float)(Math.Atan2(S.Forward.X, -S.Forward.Z) * RAD2DEG);
+                rots.Z = (float)(Math.Atan2(S.Up.X, S.Up.Y) * RAD2DEG);
+            }
+            void PlayerInput(ref MatrixD S, ref MatrixD B, ref Vector3 rots)
+            {
+                B = MatrixD.CreateRotationX(rots.X);
+                S = MatrixD.Multiply(B, S);
+                B = MatrixD.CreateRotationY(-rots.Y);
+                S = MatrixD.Multiply(B, S);
+                B = MatrixD.CreateRotationZ(rots.Z);
+                S = MatrixD.Multiply(B, S);
             }
         }
         class Foot
@@ -2543,11 +2563,31 @@ namespace IngameScript
             Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
             Echo($"DebugPlus!: {DebugPlus(DebugScreens[5])}");
             Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
+            //Echo($"Other Stuff: {Test(DebugScreens[0])}");
         }
         #endregion
 
         #region DISPLAY
-        
+        bool Test(IMyTextSurface panel)
+        {
+            if (panel == null)
+                return false;
+            DisplayManagerBuilder.Clear();
+
+            try
+            {
+                DisplayManagerBuilder.Append(
+                    $"Plane:\n{CurrentWalkSet.Plane.WorldMatrix.Forward}\n{CurrentWalkSet.Plane.WorldMatrix.Up}\n{CurrentWalkSet.Plane.WorldMatrix.Right}\n" +
+                    $"F x U: {Vector3.Cross(CurrentWalkSet.Plane.WorldMatrix.Forward, CurrentWalkSet.Plane.WorldMatrix.Up)}\n" +
+                    $"F x R: {Vector3.Cross(CurrentWalkSet.Plane.WorldMatrix.Forward, CurrentWalkSet.Plane.WorldMatrix.Right)}\n");
+
+            }
+
+            catch
+            { DisplayManagerBuilder.Append("FAIL POINT!"); }
+            panel.WriteText(DisplayManagerBuilder);
+            return true;
+        }
         bool PlaneingLiveStatus(IMyTextSurface panel)
         {
             if (panel == null)
@@ -2560,7 +2600,7 @@ namespace IngameScript
 
                 MatrixD T = CurrentWalkSet.CurrentPlane;
                 MatrixD L = CurrentWalkSet.Plane.WorldMatrix;
-                Vector3 B = CurrentWalkSet.AngleBuffer;
+                Vector3 B = CurrentWalkSet.PlaneBuffer;
 
                 DisplayManagerBuilder.Append(
                     $"Forward Target:\n{T.Forward.X:0.###}:{T.Forward.Y:0.###}:{T.Forward.Z:0.###}\n" +
