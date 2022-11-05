@@ -241,7 +241,7 @@ namespace IngameScript
         const string CockpitName = "PILOT";
         const string LCDgroupName = "LCDS";
 
-        const float Threshold = .2f;
+        const float Threshold = .02f;
         const float VScalar = .5f;
         const float MaxAccel = 0.3f;
         const float MaxSpeed = 6f;
@@ -251,7 +251,7 @@ namespace IngameScript
         const float ClockSpeedMax = 0.020f;
         const float TriggerCap = 0.6f;
         const float LookScalar = 0.005f;
-        const float CorrectScalar = 1f;
+        //const float CorrectScalar = 1f;
 
         const int SaveBlockCountSize = 6;
         const double RAD2DEG = 180 / Math.PI;
@@ -359,14 +359,13 @@ namespace IngameScript
         #endregion
 
         #region STRING BUILDERS & SCREENS
-        IMyTextPanel ButtonPanel;
-        IMyTextPanel GUIPanel;
-        IMyTextPanel SplashPanel;
         IMyTextSurface[] CockPitScreens = new IMyTextSurface[3];
         List<IMyTextPanel> DebugScreens = new List<IMyTextPanel>();
         StringBuilder DebugBinStream;
         StringBuilder DebugBinStatic;
         StringBuilder DisplayManagerBuilder;
+        StringBuilder ButtonBuilder;
+        StringBuilder GUIBuilder;
         StringBuilder SaveData;
         #endregion
 
@@ -460,7 +459,11 @@ namespace IngameScript
             public int Direction;
             public double CorrectionMag;
             public double StatorVelocity;
+            public double LiteralVelocity;
+
             double OldVelocity;
+            float LastPosition;
+            DateTime LastTime;
 
             public Joint(IMyMechanicalConnectionBlock mechBlock, int index, string name = "default", bool isGrip = false, int auxDir = 1)
             {
@@ -468,9 +471,9 @@ namespace IngameScript
                 mechBlock.Enabled = true;
                 IsGrip = isGrip;
                 AuxDirection = auxDir;
-                Jtype = (mechBlock is IMyPistonBase)? JointType.PISTON : Connection.BlockDefinition.ToString().Contains("Hinge") ? JointType.HINGE : JointType.ROTOR;
+                Jtype = (mechBlock is IMyPistonBase) ? JointType.PISTON : Connection.BlockDefinition.ToString().Contains("Hinge") ? JointType.HINGE : JointType.ROTOR;
 
-                switch(Jtype)
+                switch (Jtype)
                 {
                     case JointType.ROTOR:
                         Stator = (IMyMotorStator)mechBlock;
@@ -539,8 +542,9 @@ namespace IngameScript
             }
             public void UpdateJoint(bool activeTargetTracking, double delta, ref StringBuilder debugStream)
             {
+                UpdateLiteralVelocity();
                 UpdateActiveTarget(ref debugStream, activeTargetTracking);
-                
+
                 switch (Jtype)
                 {
                     case JointType.ROTOR:
@@ -560,7 +564,7 @@ namespace IngameScript
                         UpdateStatorVelocity(ref debugStream, activeTargetTracking);
                         UpdatePiston(activeTargetTracking);
                         break;
-                }  
+                }
             }
             public float ReturnCurrentStatorPosition()
             {
@@ -573,6 +577,16 @@ namespace IngameScript
                 return -100;
             }
 
+            void UpdateLiteralVelocity()
+            {
+                float currentPosition = ReturnCurrentStatorPosition();
+                DateTime now = DateTime.Now;
+
+                LiteralVelocity = ((currentPosition - LastPosition) / 360) / (now - LastTime).TotalMinutes;
+
+                LastTime = now;
+                LastPosition = currentPosition;
+            }
             void UpdateActiveTarget(ref StringBuilder debugBin, bool active)
             {
                 if (!active)
@@ -583,7 +597,7 @@ namespace IngameScript
                 if (Planeing)
                 {
                     ActiveTarget += PlaneTarget;
-                    switch(Jtype)
+                    switch (Jtype)
                     {
                         case JointType.ROTOR:
                             ActiveTarget = ActiveTarget % 360;
@@ -678,7 +692,7 @@ namespace IngameScript
                 LerpPoint = point;
             }
 
-            public JointFrame(Joint joint, float lerpPoint) // Hard-coded
+            public JointFrame(Joint joint, float lerpPoint) // User-Written
             {
                 Joint = joint;
                 LerpPoint = lerpPoint;
@@ -692,7 +706,8 @@ namespace IngameScript
                 switch (Joint.Jtype)
                 {
                     case JointType.ROTOR:
-                        value = value > 360 ? value - 360 : value;
+                        //value = value > 360 ? value - 360 : value;
+                        value %= 360;
                         value = value < 0 ? value + 360 : value;
                         MAX = 360;
                         break;
@@ -724,10 +739,6 @@ namespace IngameScript
             public IMyTerminalBlock Plane;
             public MatrixD CurrentPlane;
             public MatrixD BufferPlane;
-            //public Vector3 ForBuffer;
-            //public Vector3 UpBuffer;
-            public Vector3 PlaneBuffer;
-            public Vector3 OffsetBuffer;
             public Vector3 CorrectBuffer;
             public Vector3 Xbuff, Ybuff, Zbuff;
 
@@ -932,51 +943,19 @@ namespace IngameScript
                 RV.X = (float)((D.X - ((RV.Y * S.M21) + (RV.Z * S.M31))) / S.M11);
 
             }
-            void DeTransformVectorRelative(ref MatrixD S, float angX, float angY, ref Vector3 DV)
-            {
-                DV.X = (float)Math.Sin(angY);
-                DV.Y = (float)Math.Sin(angX);
-                DV.Z = (float)Math.Cos(angY);
-
-                DeTransformVectorRelative(ref S, DV, ref DV);
-            }
-            void DeTransformVectorRelative(ref MatrixD S, Vector3 R, ref Vector3 DV)
-            {
-                /*
-                    x = Xa + Yd + Zg
-                    y = Xb + Ye + Zh
-                    z = Xc + Yf + Zi 
-                 */
-
-                DV.X = (float)((R.X * S.M11) + (R.Y * S.M21) + (R.Z * S.M31));
-                DV.Y = (float)((R.X * S.M12) + (R.Y * S.M22) + (R.Z * S.M32));
-                DV.Z = (float)((R.X * S.M13) + (R.Y * S.M23) + (R.Z * S.M33));
-            }
             public void UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 rotBuffer)
             {
                 if (Plane == null)
                     return;
 
                 // Player input
-                //CurrentPlane = MatrixD.Transform(CurrentPlane, Quaternion.CreateFromYawPitchRoll(rotBuffer.Y, rotBuffer.X, rotBuffer.Z));
                 PlayerInput(ref CurrentPlane, ref BufferPlane, ref rotBuffer);
 
                 // Auto-plane
                 TransformMatrixRelative(Plane.WorldMatrix, ref CurrentPlane, ref BufferPlane);
                 MatrixToRotations(ref BufferPlane, ref CorrectBuffer);
-                PlaneBuffer = 2 * CorrectBuffer;
-
-                // O_O //
-                /*
-                OffsetBuffer.X += rotBuffer.X;
-                OffsetBuffer.Y += rotBuffer.Y;
-                OffsetBuffer.Z += rotBuffer.Z;
-
-                AngleBuffer.X += OffsetBuffer.X;
-                AngleBuffer.Y += OffsetBuffer.Y;
-                AngleBuffer.Z += OffsetBuffer.Z;
-                */
-                //*smh*//
+                //CorrectBuffer = 2 * CorrectBuffer;
+                //double dampener;
 
                 foreach (Foot foot in Feet)
                 {
@@ -984,13 +963,25 @@ namespace IngameScript
                         continue;
 
                     if (foot.Planes[0] != null)
-                        foot.Planes[0].PlaneTarget = PlaneBuffer.X * foot.Planes[0].AuxDirection;
+                    {
+                        //dampener = MaxSpeed - Math.Abs(foot.Planes[0].StatorVelocity - foot.Planes[0].LiteralVelocity);
+                        //dampener = dampener < 0 ? 0 : dampener;
+                        foot.Planes[0].PlaneTarget = CorrectBuffer.X * foot.Planes[0].AuxDirection;// * (dampener / MaxSpeed);
+                    }
 
                     if (foot.Planes[1] != null)
-                        foot.Planes[1].PlaneTarget = PlaneBuffer.Y * foot.Planes[1].AuxDirection;
+                    {
+                        //dampener = MaxSpeed - Math.Abs(foot.Planes[1].StatorVelocity - foot.Planes[1].LiteralVelocity);
+                        //dampener = dampener < 0 ? 0 : dampener;
+                        foot.Planes[1].PlaneTarget = CorrectBuffer.Y * foot.Planes[1].AuxDirection;// * (dampener / MaxSpeed);
+                    }
 
                     if (foot.Planes[2] != null)
-                        foot.Planes[2].PlaneTarget = PlaneBuffer.Z * foot.Planes[2].AuxDirection;
+                    {
+                        //dampener = MaxSpeed - Math.Abs(foot.Planes[2].StatorVelocity - foot.Planes[2].LiteralVelocity);
+                        //dampener = dampener < 0 ? 0 : dampener;
+                        foot.Planes[2].PlaneTarget = CorrectBuffer.Z * foot.Planes[2].AuxDirection;// * (dampener / MaxSpeed);
+                    }
                 }
             }
             void TransformMatrixRelative(MatrixD S, ref MatrixD T, ref MatrixD R)
@@ -1110,7 +1101,7 @@ namespace IngameScript
                 //for (int i = 0; i < Toes.Length; i++)
                 foreach (Joint toe in Toes)
                     toe.Gripping = gripping;
-                    //Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
+                //Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
             }
             void UpdateFeetPlaneing()
             {
@@ -1487,8 +1478,8 @@ namespace IngameScript
                 gripDir[i] = new List<int>();
             }
             Joint[] pitch = new Joint[2];
-            Joint[] yaw   = new Joint[2];
-            Joint[] roll  = new Joint[2];
+            Joint[] yaw = new Joint[2];
+            Joint[] roll = new Joint[2];
 
             foreach (IMyTerminalBlock block in blocks)
             {
@@ -1752,42 +1743,42 @@ namespace IngameScript
         #endregion
 
         #region GUI METHODS
-        void GUIUpdate()
+        void GUIUpdate(IMyTextPanel panel = null)
         {
-            if (ButtonPanel != null && GUIPanel != null)
+            //if (ButtonPanel != null && GUIPanel != null)
+            //{
+            ButtonBuilder.Clear();
+            ButtonBuilder.Append(RawButtonStringBuilder(CurrentGUIMode));
+
+            string[] guiData = null;
+            switch (CurrentGUIMode)
             {
-                string buttonString = RawButtonStringBuilder(CurrentGUIMode);
-                ButtonPanel.WriteText(buttonString, false);
+                case GUIMode.LIBRARY:
+                    guiData = LibraryStringBuilder(ref DebugBinStatic);
+                    DemoSelectedFrame();
+                    break;
 
-                string[] guiData = null;
-                switch (CurrentGUIMode)
-                {
-                    case GUIMode.LIBRARY:
-                        guiData = LibraryStringBuilder(ref DebugBinStatic);
-                        DemoSelectedFrame();
-                        break;
+                case GUIMode.INFO:
+                    guiData = StaticStringBuilder(false);
+                    break;
 
-                    case GUIMode.INFO:
-                        guiData = StaticStringBuilder(false);
-                        break;
+                case GUIMode.MAIN:
+                    guiData = StaticStringBuilder();
+                    break;
 
-                    case GUIMode.MAIN:
-                        guiData = StaticStringBuilder();
-                        break;
+                case GUIMode.CONTROL:
+                    guiData = ControlStringBuilder();
+                    break;
 
-                    case GUIMode.CONTROL:
-                        guiData = ControlStringBuilder();
-                        break;
-
-                    case GUIMode.OPTIONS:
-                        guiData = OptionsStringBuilder();
-                        break;
-                }
-
-                string guiString = FormattedGUIStringBuilder(guiData);
-                GUIPanel.WriteText(guiString, false);
-                DebugScreens[1].WriteText(DebugBinStatic);
+                case GUIMode.OPTIONS:
+                    guiData = OptionsStringBuilder();
+                    break;
             }
+
+            GUIBuilder.Clear();
+            GUIBuilder.Append(FormattedGUIStringBuilder(guiData));
+            DebugScreens[1].WriteText(DebugBinStatic);
+            //}
         }
         bool DemoSelectedFrame()
         {
@@ -2510,7 +2501,7 @@ namespace IngameScript
         #endregion
 
         #region UPATES 
-        
+
         void WalkManager()
         {
             if (CurrentWalkSet == null)
@@ -2559,33 +2550,31 @@ namespace IngameScript
         }
         void DisplayManager()
         {
-            Echo($"PlaneLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
-            Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
-            Echo($"DebugPlus!: {DebugPlus(DebugScreens[5])}");
-            Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
-            //Echo($"Other Stuff: {Test(DebugScreens[0])}");
+            try
+            {
+                Echo($"GUIstatus: {GUIstatus(DebugScreens[0], DebugScreens[1])}");
+                Echo($"PlaneLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
+                Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
+                Echo($"DebugPlus!: {DebugPlus(DebugScreens[3])}");
+                Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
+            }
+            catch
+            {
+                Echo("Missing Screen!");
+            }
         }
         #endregion
 
         #region DISPLAY
-        bool Test(IMyTextSurface panel)
+        bool GUIstatus(IMyTextSurface gui, IMyTextSurface buttons)
         {
-            if (panel == null)
+            if (gui == null)
                 return false;
-            DisplayManagerBuilder.Clear();
 
-            try
-            {
-                DisplayManagerBuilder.Append(
-                    $"Plane:\n{CurrentWalkSet.Plane.WorldMatrix.Forward}\n{CurrentWalkSet.Plane.WorldMatrix.Up}\n{CurrentWalkSet.Plane.WorldMatrix.Right}\n" +
-                    $"F x U: {Vector3.Cross(CurrentWalkSet.Plane.WorldMatrix.Forward, CurrentWalkSet.Plane.WorldMatrix.Up)}\n" +
-                    $"F x R: {Vector3.Cross(CurrentWalkSet.Plane.WorldMatrix.Forward, CurrentWalkSet.Plane.WorldMatrix.Right)}\n");
+            gui.WriteText(GUIBuilder);
+            if (buttons != null)
+                buttons.WriteText(ButtonBuilder);
 
-            }
-
-            catch
-            { DisplayManagerBuilder.Append("FAIL POINT!"); }
-            panel.WriteText(DisplayManagerBuilder);
             return true;
         }
         bool PlaneingLiveStatus(IMyTextSurface panel)
@@ -2600,7 +2589,7 @@ namespace IngameScript
 
                 MatrixD T = CurrentWalkSet.CurrentPlane;
                 MatrixD L = CurrentWalkSet.Plane.WorldMatrix;
-                Vector3 B = CurrentWalkSet.PlaneBuffer;
+                Vector3 B = CurrentWalkSet.CorrectBuffer;
 
                 DisplayManagerBuilder.Append(
                     $"Forward Target:\n{T.Forward.X:0.###}:{T.Forward.Y:0.###}:{T.Forward.Z:0.###}\n" +
@@ -2709,6 +2698,8 @@ namespace IngameScript
                 DebugBinStream = new StringBuilder();
                 DebugBinStatic = new StringBuilder();
                 DisplayManagerBuilder = new StringBuilder();
+                ButtonBuilder = new StringBuilder();
+                GUIBuilder = new StringBuilder();
                 SaveData = new StringBuilder();
 
                 Control = (IMyCockpit)GridTerminalSystem.GetBlockWithName(CockpitName);
@@ -2734,12 +2725,7 @@ namespace IngameScript
                     }
                 }
 
-                ButtonPanel = panels[3];
-                SplashPanel = panels[5];
-                GUIPanel = panels[4];
-
                 Runtime.UpdateFrequency = UpdateFrequency.Update1;
-
                 bInitialized = true;
             }
             catch
