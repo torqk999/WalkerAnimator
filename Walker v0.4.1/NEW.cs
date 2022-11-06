@@ -251,7 +251,6 @@ namespace IngameScript
         const float ClockSpeedMax = 0.020f;
         const float TriggerCap = 0.6f;
         const float LookScalar = 0.005f;
-        //const float CorrectScalar = 1f;
 
         const int SaveBlockCountSize = 6;
         const double RAD2DEG = 180 / Math.PI;
@@ -2552,8 +2551,8 @@ namespace IngameScript
         {
             try
             {
-                Echo($"GUIstatus: {GUIstatus(DebugScreens[0], DebugScreens[1])}");
-                Echo($"PlaneLiveStatus: {PlaneingLiveStatus(DebugScreens[2])}");
+                Echo($"GUIstatus: {GUIstatus(DebugScreens[2], DebugScreens[1])}");
+                Echo($"PlaneLiveStatus: {PlaneingLiveStatus(DebugScreens[4])}");
                 Echo($"MechStatus: {MechStatus(CockPitScreens[0])}");
                 Echo($"DebugPlus!: {DebugPlus(DebugScreens[3])}");
                 Echo($"SplashScreen: {SplashScreen(CockPitScreens[1])}");
