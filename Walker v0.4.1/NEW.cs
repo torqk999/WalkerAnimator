@@ -236,13 +236,15 @@ namespace IngameScript
         }
          */
 
+        //SHA256:Gjr4HXe4MUH4BlceqwS7uN4QFotJRKzGo0VdsjjcQm4 clark_thomson2001@yahoo.com
+
         #region MAIN
         const string SampleLegsGroupName = "ALL_JOINTS";
         const string CockpitName = "PILOT";
         const string LCDgroupName = "LCDS";
 
         const float Threshold = .02f;
-        const float VScalar = .5f;
+        const float VelocityScalar = .5f;
         const float MaxAccel = 0.3f;
         const float MaxSpeed = 6f;
         const float ClockIncrmentMag = 0.0005f;
@@ -264,13 +266,9 @@ namespace IngameScript
         Sequence CurrentWalk;
         JointSet CurrentWalkSet;
 
-        ClockMode AnimationState;
-        ClockMode OldWalkState;
-
         bool bIgnoreSave = true;
         bool bForceSave = false;
         bool bInitialized = false;
-        bool bWalking = false;
         bool bPlaneing = false;
         bool bSnapping = true;
         bool bLoaded = false;
@@ -392,12 +390,6 @@ namespace IngameScript
         #endregion
 
         #region ENUMS
-        public enum JointType
-        {
-            ROTOR,
-            HINGE,
-            PISTON
-        }
         public enum ClockMode
         {
             PAUSE,
@@ -431,31 +423,60 @@ namespace IngameScript
         #endregion
 
         #region CLASSES
+        struct JointData
+        {
+            public char TAG;
+            public string Name;
+            public int ParentIndex;
+            public int IDindex;
+            public int FootIndex;
+            public int AuxDirection;
+
+            public JointData(string input)
+            {
+                try
+                {
+                    string[] data = input.Split(':');
+                    TAG = data[0][0];
+                    Name = data[1];
+                    ParentIndex = int.Parse(data[2]);
+                    IDindex = int.Parse(data[3]);
+                    FootIndex = int.Parse(data[4]);
+                    AuxDirection = int.Parse(data[5]);
+                    //IsGrip = TAG == 'G';
+                }
+                catch
+                {
+                    TAG = 'N';
+                    Name = "Null";
+                    ParentIndex = -1;
+                    IDindex = -1;
+                    FootIndex = -1;
+                    AuxDirection = -1;
+                    //IsGrip = false;
+                }
+            }
+            public string Save()
+            {
+                return $"{TAG}:{Name}:{ParentIndex}:{IDindex}:{FootIndex}:{AuxDirection}";
+            }
+        }
         class Joint
         {
-            public IMyMotorStator Stator;
-            public IMyPistonBase Piston;
+            public JointData Data;
             public IMyMechanicalConnectionBlock Connection;
 
-            public string Name;
-            public int Index;
-            public bool IsGrip;
-
-            public JointType Jtype;
             public float[] LerpPoints = new float[2];
-            public string LoadedFrame;
-
-            // Controlled by linked foot
             public bool Planeing = false;
             public bool Gripping = false;
-            public int AuxDirection;
+
             //////////////////////////////
 
-            public double PlaneTarget;
+            public double PlaneCorrection;
             public double AnimTarget;
             public double ActiveTarget;
 
-            public int Direction;
+            public int CorrectionDir;
             public double CorrectionMag;
             public double StatorVelocity;
             public double LiteralVelocity;
@@ -464,38 +485,11 @@ namespace IngameScript
             float LastPosition;
             DateTime LastTime;
 
-            public Joint(IMyMechanicalConnectionBlock mechBlock, int index, string name = "default", bool isGrip = false, int auxDir = 1)
+            public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data)
             {
                 Connection = mechBlock;
                 mechBlock.Enabled = true;
-                IsGrip = isGrip;
-                AuxDirection = auxDir;
-                Jtype = (mechBlock is IMyPistonBase) ? JointType.PISTON : Connection.BlockDefinition.ToString().Contains("Hinge") ? JointType.HINGE : JointType.ROTOR;
-
-                switch (Jtype)
-                {
-                    case JointType.ROTOR:
-                        Stator = (IMyMotorStator)mechBlock;
-                        Stator.LowerLimitDeg = float.MinValue;
-                        Stator.UpperLimitDeg = float.MaxValue;
-                        break;
-
-                    case JointType.HINGE:
-                        Stator = (IMyMotorStator)mechBlock;
-                        if (IsGrip)
-                            break;
-                        Stator.LowerLimitDeg = -90;
-                        Stator.UpperLimitDeg = 90;
-                        break;
-
-                    case JointType.PISTON:
-                        Piston = (IMyPistonBase)mechBlock;
-                        break;
-                }
-
-                Name = name;
-                Index = index;
-                LoadedFrame = "none";
+                Data = data;
             }
 
             public void LoadAnimationFrame(JointFrame frame, bool forward = true, bool interrupt = false)
@@ -515,67 +509,29 @@ namespace IngameScript
             {
                 AnimTarget = value;
             }
-            public void LerpAnimationFrame(float lerpTime, ref StringBuilder debugBin)
-            {
-                if (lerpTime > 1 ||
-                    lerpTime < 0)
-                    return;
 
-                float target;
-
-                if (Jtype == JointType.ROTOR)
-                {
-                    float mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
-                    int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
-                    mag = mag > 180 ? 360 - mag : mag;
-                    mag *= (lerpTime * dir);
-
-                    target = LerpPoints[0] + mag;
-                    target = (target > 360) ? target - 360 : target;
-                    target = (target < 0) ? target + 360 : target;
-                }
-                else
-                    target = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
-
-                AnimTarget = target;
-            }
             public void UpdateJoint(bool activeTargetTracking, double delta, ref StringBuilder debugStream)
             {
                 UpdateLiteralVelocity();
-                UpdateActiveTarget(ref debugStream, activeTargetTracking);
-
-                switch (Jtype)
+                if (!activeTargetTracking)
                 {
-                    case JointType.ROTOR:
-                        UpdateRotorVector(ref debugStream);
-                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
-                        UpdateStator(activeTargetTracking);
-                        break;
-
-                    case JointType.HINGE:
-                        UpdateHingeVector(ref debugStream);
-                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
-                        UpdateStator(activeTargetTracking);
-                        break;
-
-                    case JointType.PISTON:
-                        UpdatePistonVector(ref debugStream);
-                        UpdateStatorVelocity(ref debugStream, activeTargetTracking);
-                        UpdatePiston(activeTargetTracking);
-                        break;
+                    UpdateStatorVelocity(ref debugStream, activeTargetTracking);
+                    return;
                 }
+
+                ActiveTarget = AnimTarget;
+
+                UpdateCorrectionDisplacement(ref debugStream);
+
+                if (Planeing)
+                {
+                    UpdatePlaneDisplacement(ref debugStream);
+                    UpdateCorrectionDisplacement(ref debugStream);
+                }
+
+                UpdateStatorVelocity(ref debugStream, activeTargetTracking);
+                UpdateStator();
             }
-            public float ReturnCurrentStatorPosition()
-            {
-                if (Stator != null)
-                    return (float)(Stator.Angle * RAD2DEG);
-
-                if (Piston != null)
-                    return Piston.CurrentPosition;
-
-                return -100;
-            }
-
             void UpdateLiteralVelocity()
             {
                 float currentPosition = ReturnCurrentStatorPosition();
@@ -586,71 +542,20 @@ namespace IngameScript
                 LastTime = now;
                 LastPosition = currentPosition;
             }
-            void UpdateActiveTarget(ref StringBuilder debugBin, bool active)
-            {
-                if (!active)
-                    return;
-
-                ActiveTarget = AnimTarget;
-
-                if (Planeing)
-                {
-                    ActiveTarget += PlaneTarget;
-                    switch (Jtype)
-                    {
-                        case JointType.ROTOR:
-                            ActiveTarget = ActiveTarget % 360;
-                            ActiveTarget = ActiveTarget < 0 ? ActiveTarget + 360 : ActiveTarget;
-                            break;
-
-                        case JointType.HINGE:
-                            ActiveTarget = ActiveTarget % 360;
-                            ActiveTarget = ActiveTarget > 180 ? ActiveTarget - 360 : ActiveTarget;
-                            ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
-                            break;
-
-                        case JointType.PISTON:
-                            ActiveTarget = ActiveTarget > 10 ? 10 : ActiveTarget;
-                            ActiveTarget = ActiveTarget < 0 ? 0 : ActiveTarget;
-                            break;
-                    }
-                }
-            }
-            void UpdateRotorVector(ref StringBuilder debugBin)
-            {
-                double current = (Stator.Angle * RAD2DEG);
-
-                double delta = Math.Abs(ActiveTarget - current);
-                Direction = (delta > 180) ? Math.Sign(current - ActiveTarget) : Math.Sign(ActiveTarget - current);
-                CorrectionMag = (delta > 180) ? 360 - delta : delta;
-                Direction = (Direction == 0) ? 1 : Direction;
-            }
-            void UpdateHingeVector(ref StringBuilder debugBin)
-            {
-                CorrectionMag = ActiveTarget - (Stator.Angle * RAD2DEG);
-                Direction = Math.Sign(CorrectionMag);
-                CorrectionMag = Math.Abs(CorrectionMag);
-            }
-            void UpdatePistonVector(ref StringBuilder debugBin)
-            {
-                CorrectionMag = ActiveTarget - Piston.CurrentPosition;
-                Direction = Math.Sign(CorrectionMag);
-                CorrectionMag = Math.Abs(CorrectionMag);
-            }
             void UpdateStatorVelocity(ref StringBuilder debugStream, bool active)
             {
                 if (active)
                 {
                     OldVelocity = StatorVelocity;
-                    if (IsGrip)
+                    if (Data.TAG == 'G')
                     {
-                        StatorVelocity = MaxSpeed * AuxDirection * (Gripping ? 1 : -1);
+                        StatorVelocity = MaxSpeed * Data.AuxDirection * (Gripping ? 1 : -1);
                     }
                     else
                     {
-                        double scale = CorrectionMag * VScalar;
+                        double scale = CorrectionMag * VelocityScalar;
                         //scale = Math.Pow(scale, 3);
-                        StatorVelocity = Direction * scale;
+                        StatorVelocity = CorrectionDir * scale;
 
                         if (scale < Threshold)
                             StatorVelocity = 0;
@@ -662,19 +567,187 @@ namespace IngameScript
                 else
                     StatorVelocity = 0;
             }
-            void UpdateStator(bool active)
+
+            public virtual float ReturnCurrentStatorPosition()
             {
-                if (Stator == null)
+                return -100;
+            }
+            public virtual float ClampTargetValue(float target)
+            {
+                return 0;
+            }
+
+            public virtual void LerpAnimationFrame(float lerpTime, ref StringBuilder debugBin)
+            {
+                if (lerpTime > 1 ||
+                    lerpTime < 0)
                     return;
+            }
+            public virtual void UpdatePlaneDisplacement(ref StringBuilder debugBin)
+            {
+                if (!Planeing)
+                    return;
+                debugBin.Append($"Planeing |{Data.Name}| :\nAuxDir: {Data.AuxDirection}\nPre-Correction: {PlaneCorrection}\n" +
+                    $"CorrectionMag: {CorrectionMag}\nCorrectionDir: {CorrectionDir}\n");
+
+                PlaneCorrection -= (CorrectionMag * CorrectionDir); // Remove what is already planned to be travelled
+                ActiveTarget += PlaneCorrection; // Summate with current active target
+
+                debugBin.Append($"Post-Correction: {PlaneCorrection}\nActive Target: {ActiveTarget}");
+            }
+            public virtual void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
+            {
+
+            }
+            public virtual void UpdateStator()
+            {
+
+            }
+        }
+        class Piston : Joint
+        {
+            public IMyPistonBase PistonBase;
+
+            public Piston(IMyPistonBase pistonBase, JointData data) : base(pistonBase, data)
+            {
+                PistonBase = pistonBase;
+            }
+
+            public override float ReturnCurrentStatorPosition()
+            {
+                return PistonBase.CurrentPosition;
+            }
+            public override float ClampTargetValue(float target)
+            {
+                target = target < 0 ? 0 : target;
+                target = target > 10 ? 10 : target;
+                return target;
+            }
+            public override void LerpAnimationFrame(float lerpTime, ref StringBuilder debugBin)
+            {
+                base.LerpAnimationFrame(lerpTime, ref debugBin);
+
+                AnimTarget = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
+            }
+            public override void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
+            {
+                CorrectionMag = ActiveTarget - PistonBase.CurrentPosition;
+                CorrectionDir = Math.Sign(CorrectionMag);
+                CorrectionMag = Math.Abs(CorrectionMag);
+            }
+            public override void UpdatePlaneDisplacement(ref StringBuilder debugBin)
+            {
+                base.UpdatePlaneDisplacement(ref debugBin);
+
+                ActiveTarget = ActiveTarget > 10 ? 10 : ActiveTarget;
+                ActiveTarget = ActiveTarget < 0 ? 0 : ActiveTarget;
+            }
+            public override void UpdateStator()
+            {
+                base.UpdateStator();
+
+                PistonBase.SetValueFloat("Velocity", (float)StatorVelocity);
+            }
+        }
+        class Rotor : Joint
+        {
+            public IMyMotorStator Stator;
+
+            public Rotor(IMyMotorStator stator, JointData data) : base(stator, data)
+            {
+                Stator = stator;
+            }
+
+            public override float ReturnCurrentStatorPosition()
+            {
+                return (float)(Stator.Angle * RAD2DEG);
+            }
+            public override float ClampTargetValue(float target)
+            {
+                target %= 360;
+                target = target < 0 ? target + 360 : target;
+                return target;
+            }
+            public override void LerpAnimationFrame(float lerpTime, ref StringBuilder debugBin)
+            {
+                base.LerpAnimationFrame(lerpTime, ref debugBin);
+
+                float mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
+                int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
+                mag = mag > 180 ? 360 - mag : mag;
+                mag *= (lerpTime * dir);
+
+                AnimTarget = LerpPoints[0] + mag;
+                AnimTarget = (AnimTarget > 360) ? AnimTarget - 360 : AnimTarget;
+                AnimTarget = (AnimTarget < 0) ? AnimTarget + 360 : AnimTarget;
+            }
+            public override void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
+            {
+                double current = (Stator.Angle * RAD2DEG);
+
+                double delta = Math.Abs(ActiveTarget - current);
+                CorrectionDir = (delta > 180) ? Math.Sign(current - ActiveTarget) : Math.Sign(ActiveTarget - current);
+                CorrectionMag = (delta > 180) ? 360 - delta : delta;
+                //CorrectionDir = (CorrectionDir == 0) ? 1 : CorrectionDir;
+            }
+            public override void UpdatePlaneDisplacement(ref StringBuilder debugBin)
+            {
+                base.UpdatePlaneDisplacement(ref debugBin);
+
+                ActiveTarget = ActiveTarget % 360;
+                ActiveTarget = ActiveTarget < 0 ? ActiveTarget + 360 : ActiveTarget;
+            }
+            public override void UpdateStator()
+            {
+                base.UpdateStator();
 
                 Stator.SetValueFloat("Velocity", (float)StatorVelocity);
             }
-            void UpdatePiston(bool active)
-            {
-                if (Piston == null)
-                    return;
+        }
+        class Hinge : Joint
+        {
+            public IMyMotorStator Stator;
 
-                Piston.SetValueFloat("Velocity", (float)StatorVelocity);
+            public Hinge(IMyMotorStator stator, JointData data) : base(stator, data)
+            {
+                Stator = stator;
+            }
+
+            public override float ReturnCurrentStatorPosition()
+            {
+                return (float)(Stator.Angle * RAD2DEG);
+            }
+            public override float ClampTargetValue(float target)
+            {
+                target = target < -90 ? -90 : target;
+                target = target > 90 ? 90 : target;
+                return target;
+            }
+            public override void LerpAnimationFrame(float lerpTime, ref StringBuilder debugBin)
+            {
+                base.LerpAnimationFrame(lerpTime, ref debugBin);
+
+                AnimTarget = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
+            }
+            public override void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
+            {
+                CorrectionMag = ActiveTarget - (Stator.Angle * RAD2DEG);
+                CorrectionDir = Math.Sign(CorrectionMag);
+                CorrectionMag = Math.Abs(CorrectionMag);
+            }
+            public override void UpdatePlaneDisplacement(ref StringBuilder debugBin)
+            {
+                base.UpdatePlaneDisplacement(ref debugBin);
+
+                ActiveTarget = ActiveTarget % 360;
+                ActiveTarget = ActiveTarget > 180 ? ActiveTarget - 360 : ActiveTarget;
+                ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
+            }
+            public override void UpdateStator()
+            {
+                base.UpdateStator();
+
+                Stator.SetValueFloat("Velocity", (float)StatorVelocity);
             }
         }
         class JointFrame
@@ -690,43 +763,14 @@ namespace IngameScript
                     point = (int)point;
                 LerpPoint = point;
             }
-
             public JointFrame(Joint joint, float lerpPoint) // User-Written
             {
                 Joint = joint;
                 LerpPoint = lerpPoint;
             }
-
-            public bool ChangeStatorLerpPoint(float value)
+            public void ChangeStatorLerpPoint(float value)
             {
-                float MIN = 0;
-                float MAX = 0;
-
-                switch (Joint.Jtype)
-                {
-                    case JointType.ROTOR:
-                        //value = value > 360 ? value - 360 : value;
-                        value %= 360;
-                        value = value < 0 ? value + 360 : value;
-                        MAX = 360;
-                        break;
-
-                    case JointType.HINGE:
-                        MIN = -90;
-                        MAX = 90;
-                        break;
-
-                    case JointType.PISTON:
-                        MAX = 10;
-                        break;
-                }
-
-                if (value < MIN ||
-                    value > MAX)
-                    return false;
-
-                LerpPoint = value;
-                return true;
+                LerpPoint = Joint.ClampTargetValue(value);
             }
         }
         class JointSet
@@ -746,7 +790,6 @@ namespace IngameScript
             public List<Sequence> Sequences;
 
             public bool bIgnoreFeet;
-
             public bool Triggered = true;
             public double TriggerTime;
 
@@ -755,7 +798,7 @@ namespace IngameScript
                 public override int Compare(Joint x, Joint y)
                 {
                     if (x != null && y != null)
-                        return x.Index.CompareTo(y.Index);
+                        return x.Data.IDindex.CompareTo(y.Data.IDindex);
                     else
                         return 0;
                 }
@@ -891,7 +934,7 @@ namespace IngameScript
             {
                 foreach (Foot foot in Feet)
                 {
-                    foot.TogglePlaneing(toggle);
+                    foot.Planeing = toggle;
                 }
             }
 
@@ -953,35 +996,12 @@ namespace IngameScript
                 // Auto-plane
                 TransformMatrixRelative(Plane.WorldMatrix, ref CurrentPlane, ref BufferPlane);
                 MatrixToRotations(ref BufferPlane, ref CorrectBuffer);
-                //CorrectBuffer = 2 * CorrectBuffer;
-                //double dampener;
 
                 foreach (Foot foot in Feet)
-                {
-                    if (foot == null)
-                        continue;
-
-                    if (foot.Planes[0] != null)
-                    {
-                        //dampener = MaxSpeed - Math.Abs(foot.Planes[0].StatorVelocity - foot.Planes[0].LiteralVelocity);
-                        //dampener = dampener < 0 ? 0 : dampener;
-                        foot.Planes[0].PlaneTarget = CorrectBuffer.X * foot.Planes[0].AuxDirection;// * (dampener / MaxSpeed);
-                    }
-
-                    if (foot.Planes[1] != null)
-                    {
-                        //dampener = MaxSpeed - Math.Abs(foot.Planes[1].StatorVelocity - foot.Planes[1].LiteralVelocity);
-                        //dampener = dampener < 0 ? 0 : dampener;
-                        foot.Planes[1].PlaneTarget = CorrectBuffer.Y * foot.Planes[1].AuxDirection;// * (dampener / MaxSpeed);
-                    }
-
-                    if (foot.Planes[2] != null)
-                    {
-                        //dampener = MaxSpeed - Math.Abs(foot.Planes[2].StatorVelocity - foot.Planes[2].LiteralVelocity);
-                        //dampener = dampener < 0 ? 0 : dampener;
-                        foot.Planes[2].PlaneTarget = CorrectBuffer.Z * foot.Planes[2].AuxDirection;// * (dampener / MaxSpeed);
-                    }
-                }
+                    if (foot != null)
+                        for (int i = 0; i < 3; i++)
+                            if (foot.Planes[i] != null)
+                                foot.Planes[i].PlaneCorrection = CorrectBuffer.GetDim(i) * foot.Planes[i].Data.AuxDirection;
             }
             void TransformMatrixRelative(MatrixD S, ref MatrixD T, ref MatrixD R)
             {
@@ -1043,7 +1063,7 @@ namespace IngameScript
                 ToggleGrip(locking);
 
                 Locked = locking;
-                UpdateFeetPlaneing();
+                UpdateFootPlaneing();
 
                 foreach (IMyLandingGear gear in Pads)
                 {
@@ -1060,15 +1080,10 @@ namespace IngameScript
                     }
                 }
             }
-            public void TogglePlaneing(bool planeing = true)
+            /*public void TogglePlaneing(bool planeing = true)
             {
                 Planeing = planeing;
-                UpdateFeetPlaneing();
-            }
-            /*public void SnapShotPlane()
-            {
-                Pitch.SnapShotPlane();
-                Roll.SnapShotPlane();
+                //UpdateFootPlaneing();
             }*/
             public bool CheckTouching(ref StringBuilder debug)
             {
@@ -1084,25 +1099,23 @@ namespace IngameScript
             {
                 foreach (IMyLandingGear gear in Pads)
                 {
-                    if (gear.LockMode == LandingGearMode.Locked)
+                    if (gear.LockMode == LandingGearMode.Locked ||
+                        gear.LockMode == LandingGearMode.ReadyToLock)
                     {
-                        ToggleLock(true);
+                        //ToggleLock(true);
                         return true;
                     }
                 }
 
-                ToggleLock(false);
+                //ToggleLock(false);
                 return false;
             }
             void ToggleGrip(bool gripping = true)
             {
-                //int dir = gripping ? -1 : 1;
-                //for (int i = 0; i < Toes.Length; i++)
                 foreach (Joint toe in Toes)
                     toe.Gripping = gripping;
-                //Grips[i].SetValueFloat("Velocity", MaxSpeed * dir);// * GripDirections[i]);  //  >: |
             }
-            void UpdateFeetPlaneing()
+            void UpdateFootPlaneing()
             {
                 foreach (Joint plane in Planes)
                     if (plane != null)
@@ -1114,7 +1127,7 @@ namespace IngameScript
             public string Name;
             public JointFrame[] Jframes;
 
-            public KeyFrame(string name, JointFrame[] jFrames)//, JointSet legs)
+            public KeyFrame(string name, JointFrame[] jFrames)
             {
                 Name = name;
                 Jframes = jFrames;
@@ -1128,13 +1141,13 @@ namespace IngameScript
             public JointSet JointSet;
 
             // Clock
-            public ClockMode ClockMode;
+            public ClockMode RisidualClockMode;
+            public ClockMode CurrentClockMode;
             public bool bFrameLoadForward;
             public float CurrentClockSpeed;
             public float CurrentClockTime;
 
             // Frames
-            //int StartFrameIndex;
             public KeyFrame CurrentFrame;
             public int CurrentFrameIndex;
 
@@ -1150,7 +1163,8 @@ namespace IngameScript
                 if (Frames == null)
                     Frames = new List<KeyFrame>();
 
-                ClockMode = ClockMode.PAUSE;
+                CurrentClockMode = ClockMode.PAUSE;
+                RisidualClockMode = ClockMode.FOR; // default for now
                 CurrentFrameIndex = 0;
                 CurrentClockTime = 0;
                 CurrentClockSpeed = clockSpeed;
@@ -1159,7 +1173,8 @@ namespace IngameScript
             public void ZeroSequence(ref StringBuilder debugBin)
             {
                 LoadFrame(0, true, false, ref debugBin);
-                ClockMode = ClockMode.PAUSE;
+                RisidualClockMode = CurrentClockMode;
+                CurrentClockMode = ClockMode.PAUSE;
                 CurrentClockTime = 0;
             }
             public void UpdateClockSpeed(bool increase = true)
@@ -1175,25 +1190,30 @@ namespace IngameScript
                     CurrentClockSpeed = CurrentClockSpeed < ClockSpeedMin ? ClockSpeedMin : CurrentClockSpeed;
                 }
             }
-            public void UpdateClockMode(ClockMode mode)
+            public void SetClockMode(ClockMode mode)
             {
-                ClockMode = mode;
+                RisidualClockMode = mode == ClockMode.PAUSE ? CurrentClockMode : mode;
+                CurrentClockMode = mode;
             }
-            public bool InitializeSeq(ClockMode mode, int startIndex)
+            public void ToggleClockPause()
+            {
+                CurrentClockMode = CurrentClockMode == ClockMode.PAUSE ? RisidualClockMode : ClockMode.PAUSE;
+            }
+            public void ToggleClockDirection()
+            {
+                RisidualClockMode = RisidualClockMode == ClockMode.FOR ? ClockMode.REV : ClockMode.FOR;
+                CurrentClockMode = CurrentClockMode == ClockMode.PAUSE ? CurrentClockMode : RisidualClockMode;
+            }
+            public bool InitializeSeq(ref StringBuilder debugBin)
             {
                 if (Frames.Count == 0)
                     return false;
 
-                if (startIndex < 0 ||
-                    startIndex >= Frames.Count)
-                    return false;
+                CurrentFrame = Frames[0];
 
-                ClockMode = mode;
-                CurrentFrame = Frames[startIndex];
-                bool forward = mode == ClockMode.FOR;
                 foreach (JointFrame jFrame in CurrentFrame.Jframes)
                 {
-                    jFrame.Joint.LoadAnimationFrame(jFrame, forward);
+                    jFrame.Joint.LoadAnimationFrame(jFrame);
                 }
 
                 return true;
@@ -1212,17 +1232,15 @@ namespace IngameScript
 
             public bool UpdateSequence(ref StringBuilder debugBin)
             {
-                if (CurrentFrame == null)
+                if (CurrentFrame == null ||
+                    CurrentClockMode == ClockMode.PAUSE)
                     return false;
 
                 UpdateTriggers(ref debugBin);
                 LerpFrame(CurrentClockTime, ref debugBin);
                 return true;
             }
-            public void ToggleSequence(ClockMode mode)
-            {
-                ClockMode = mode;
-            }
+
             public bool AddKeyFrameSnapshot(ref StringBuilder debugBin, int index = -1, string name = null, bool snapping = false)
             {
                 if (JointSet == null ||
@@ -1260,9 +1278,7 @@ namespace IngameScript
                 bool forward = false;
                 bool interrupt = false;
 
-                //debugBin += "start of triggers...\n";
-
-                switch (ClockMode)
+                switch (CurrentClockMode)
                 {
                     case ClockMode.PAUSE:
 
@@ -1314,8 +1330,7 @@ namespace IngameScript
             }
             void LoadFrame(int index, bool forward, bool interrupt, ref StringBuilder debugBin)
             {
-                if (JointSet == null)//||
-                    //JointSet.Joints.Length == 0)
+                if (JointSet == null)
                     return;
 
                 if (index >= Frames.Count ||
@@ -1385,40 +1400,59 @@ namespace IngameScript
             if (pads0.Count == 0 ||
                 pads1.Count == 0)
             {
-                debugBin.Append("Pads were not found!\n");
                 return false;
             }
 
             if (toes0.Count == 0 ||
                 toes1.Count == 0)
             {
-                debugBin.Append("Toes were not found!\n");
                 return false;
             }
 
             SampleLegs = new JointSet("SampleLegs", SampleLegsGroupName, 0, SampleJointNames.Length, Control, false);
             CurrentWalkSet = SampleLegs;
+            JointData data = new JointData();
+            data.TAG = 'J';
+            data.ParentIndex = 0;
 
             for (int i = 0; i < SampleJointNames.Length; i++)
             {
+                data.Name = SampleJointNames[i];
+
+                data.IDindex = i;
+
                 IMyTerminalBlock nextJoint = GridTerminalSystem.GetBlockWithName(SampleJointNames[i]);
                 if (nextJoint == null)
                 {
-                    debugBin.Append($"Joint {i}:{SampleJointNames[i]} was not found!\n");
                     return false;
                 }
 
-                if (nextJoint is IMyMechanicalConnectionBlock)
+                if (!(nextJoint is IMyMechanicalConnectionBlock))
                 {
-                    SampleLegs.Joints[i] = new Joint((IMyMechanicalConnectionBlock)nextJoint, i, SampleJointNames[i]);
-                    debugBin.Append($"Joint {i}:{SampleJointNames[i]} successfully added!\n");
+                    return false;
                 }
+
+                SampleLegs.Joints[i] = JointConstructor((IMyMechanicalConnectionBlock)nextJoint, data);
+                debugBin.Append($"Joint {i}:{SampleJointNames[i]} successfully added!\n");
             }
 
+            data.TAG = 'G';
+            data.Name = "LeftToe";
+
             foreach (IMyMotorStator toe in toes0)
-                toeBuffer0.Add(new Joint(toe, -1, "LeftToe", true, -1));
+            {
+                data.IDindex++;
+                toeBuffer0.Add(JointConstructor(toe, data));
+            }
+                
+            data.Name = "RightToe";
+
             foreach (IMyMotorStator toe in toes1)
-                toeBuffer1.Add(new Joint(toe, -1, "RightToe", true, -1));
+            {
+                data.IDindex++;
+                toeBuffer1.Add(JointConstructor(toe, data));
+            }
+                
 
             //0,1,4 : 5,8,9 : r,p,y
 
@@ -1468,6 +1502,7 @@ namespace IngameScript
             // foot buffering
             Foot[] feetBuffer = new Foot[2];
             List<IMyLandingGear>[] toes = new List<IMyLandingGear>[2];
+            debugBin.Append($"toeBufferInitSize: {toes.Length}\n");
             List<Joint>[] grips = new List<Joint>[2];
             List<int>[] gripDir = new List<int>[2];
             for (int i = 0; i < 2; i++)
@@ -1484,7 +1519,7 @@ namespace IngameScript
             {
                 if (block is IMyLandingGear)
                 {
-                    BuildToe(ref debugBin, ref toes, setIndex, (IMyLandingGear)block);
+                    BuildToePad(ref debugBin, ref toes, setIndex, (IMyLandingGear)block);
                 }
 
                 if (block is IMyPistonBase ||
@@ -1501,251 +1536,109 @@ namespace IngameScript
 
             return new JointSet(name, blockGroupName, setIndex, jointBuffer.ToArray(), footBuffer, control, null, ignoreFeet);
         }
-        void BuildToe(ref StringBuilder debugBin, ref List<IMyLandingGear>[] toeBuffer, int setIndex, IMyLandingGear gear)
+        bool CheckData(ref StringBuilder debugBin, out JointData data, IMyTerminalBlock block, int setIndex)
         {
-            string[] data = gear.CustomData.Split(':');
-            if (data.Length != SaveBlockCountSize)
-                return;
+            data = new JointData();
 
-            if (data[0] != "T")
-                return;
+            string[] raw = block.CustomData.Split(':');
+            if (raw.Length != SaveBlockCountSize)
+                return false;
 
-            string name = data[1];
+            data.TAG = raw[0][0];
+            data.Name = raw[1];
 
-            int parentIndex;
-            if (!int.TryParse(data[2], out parentIndex))
-                return;
+            if (!int.TryParse(raw[2], out data.ParentIndex))
+                return false;
 
-            if (parentIndex != setIndex)
-                return;
+            if (data.ParentIndex != setIndex)
+                return false;
 
-            int IDindex;
-            if (!int.TryParse(data[3], out IDindex))
-                IDindex = -1; // un-needed atm
+            if (!int.TryParse(raw[3], out data.IDindex))
+                data.IDindex = -1; // un-needed atm
 
-            int footIndex;
-            if (!int.TryParse(data[4], out footIndex))
-                return;
+            if (!int.TryParse(raw[4], out data.FootIndex))
+                return false;
 
-            int direction;
-            if (!int.TryParse(data[5], out direction))
-                return;
+            if (!int.TryParse(raw[5], out data.AuxDirection))
+                data.AuxDirection = 0; // disable behaviour on bad read
 
-            if (footIndex < 0 ||
-                footIndex >= toeBuffer.Length)
-                return;
+            return true;
+        }
+        void BuildToePad(ref StringBuilder debugBin, ref List<IMyLandingGear>[] toePadBuffer, int setIndex, IMyLandingGear gear)
+        {
+            JointData data;
 
-            toeBuffer[footIndex].Add(gear);
+            if (CheckData(ref debugBin, out data, gear, setIndex) &&
+                data.FootIndex > -1 && data.FootIndex < toePadBuffer.Length)
+                toePadBuffer[data.FootIndex].Add(gear);
         }
         void BuildJoint(ref StringBuilder debugBin, ref List<Joint> jBuffer, ref List<Joint>[] gBuffer, ref Joint[] pitch, ref Joint[] yaw, ref Joint[] roll, int setIndex, IMyMechanicalConnectionBlock jointBlock)
         {
-            string[] data = jointBlock.CustomData.Split(':');
-            if (data.Length != SaveBlockCountSize)
-                return;
+            JointData newData;
 
-            /* toe-pads = T:name:sInd:uInd:fInd:n/a
-
-                  joint = J:name:sInd:uInd:n/a :n/a
-                   grip = G:name:sInd:uInd:fInd:dir
-                   roll = R:name:sInd:uInd:fInd:dir
-                  pitch = P:name:sInd:uInd:fInd:dir
-                    yaw = Y:name:sInd:uInd:fInd:dir */
-
-            string name = data[1];
-
-            int parentIndex;
-            if (!int.TryParse(data[2], out parentIndex))
-                return;
-
-            if (parentIndex != setIndex)
-                return;
-
-            int IDindex;
-            if (!int.TryParse(data[3], out IDindex))
-                return;
-
-            int footIndex;
-            if (!int.TryParse(data[4], out footIndex))
-                return;
-
-            int direction;
-            if (!int.TryParse(data[5], out direction))
-                return;
-
-            Joint newJoint = null;
-
-            switch (data[0])
+            if (!CheckData(ref debugBin, out newData, jointBlock, setIndex))
             {
-                case "P":
-                    if (footIndex < 0 || footIndex >= pitch.Length)
+                debugBin.Append("CheckFailed!\n");
+                return;
+            }
+
+            Joint newJoint = JointConstructor(jointBlock, newData);
+
+            switch (newData.TAG)
+            {
+                case 'P':
+                    if (newData.FootIndex < 0 || newData.FootIndex >= pitch.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
-                    pitch[footIndex] = newJoint;
+                    pitch[newData.FootIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
 
-                case "Y":
-                    if (footIndex < 0 || footIndex >= yaw.Length)
+                case 'Y':
+                    if (newData.FootIndex < 0 || newData.FootIndex >= yaw.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
-                    yaw[footIndex] = newJoint;
+                    yaw[newData.FootIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
 
-                case "R":
-                    if (footIndex < 0 || footIndex >= roll.Length)
+                case 'R':
+                    if (newData.FootIndex < 0 || newData.FootIndex >= roll.Length)
                         return;
-                    newJoint = new Joint(jointBlock, IDindex, name, false, direction);
-                    roll[footIndex] = newJoint;
+                    roll[newData.FootIndex] = newJoint;
                     jBuffer.Add(newJoint);
                     break;
 
-                case "J":
-                    newJoint = new Joint(jointBlock, IDindex, name);
+                case 'J':
                     jBuffer.Add(newJoint);
                     break;
 
-                case "G":
-                    newJoint = new Joint(jointBlock, IDindex, name, true, direction);
-                    gBuffer[footIndex].Add(newJoint);
+                case 'G':
+                    gBuffer[newData.FootIndex].Add(newJoint);
                     break;
 
                 default:
                     debugBin.Append("Invalid joint code!\n");
-                    break;
+                    return;
             }
+            debugBin.Append("Joint added!\n");
         }
-        #endregion
-
-        #region PLAYER INPUTS
-        void ControlInput()
+        Joint JointConstructor(IMyMechanicalConnectionBlock jointBlock, JointData data)
         {
-            if (Control == null)
-            {
-                RotationBuffer = Vector3.Zero;
-                return;
-            }
+            if (jointBlock is IMyPistonBase)
+                return new Piston((IMyPistonBase)jointBlock, data);
 
-            switch (CurrentGUIMode)
-            {
-                case GUIMode.LIBRARY:
-                    switch ((int)Control.MoveIndicator.Z)
-                    {
-                        case -1:
-                            if (LastLibraryInput[0] == -1)
-                                break;
-                            LastLibraryInput[0] = -1;
-                            GUINavigation(GUINav.UP);
-                            GUIUpdate();
-                            break;
+            if (!(jointBlock is IMyMotorStator))
+                return null;
 
-                        case 0:
-                            if (LastLibraryInput[0] == 0)
-                                break;
-                            LastLibraryInput[0] = 0;
-                            break;
+            if (jointBlock.BlockDefinition.ToString().Contains("Hinge"))
+                return new Hinge((IMyMotorStator)jointBlock, data);
 
-                        case 1:
-                            if (LastLibraryInput[0] == 1)
-                                break;
-                            LastLibraryInput[0] = 1;
-                            GUINavigation(GUINav.DOWN);
-                            GUIUpdate();
-                            break;
-                    }
-                    switch ((int)Control.MoveIndicator.X)
-                    {
-                        case -1:
-                            if (LastLibraryInput[1] == -1)
-                                break;
-                            LastLibraryInput[1] = -1;
-                            GUINavigation(GUINav.BACK);
-                            GUIUpdate();
-                            break;
-
-                        case 0:
-                            if (LastLibraryInput[1] == 0)
-                                break;
-                            LastLibraryInput[1] = 0;
-                            break;
-
-                        case 1:
-                            if (LastLibraryInput[1] == 1)
-                                break;
-                            LastLibraryInput[1] = 1;
-                            GUINavigation(GUINav.SELECT);
-                            GUIUpdate();
-                            break;
-                    }
-                    break;
-
-                case GUIMode.CONTROL:
-                    RotationBuffer.X = LookScalar * Control.RotationIndicator.X;
-                    RotationBuffer.Y = LookScalar * Control.RotationIndicator.Y;
-                    RotationBuffer.Z = LookScalar * Control.RollIndicator;
-                    switch ((int)Control.MoveIndicator.Z)
-                    {
-                        case 1:
-                            if (LastMechInput == -1)
-                                break;
-                            LastMechInput = -1;
-                            CurrentWalk.UpdateClockMode(ClockMode.REV);
-                            bWalking = true;
-                            break;
-
-                        case 0:
-                            if (LastMechInput == 0)
-                                break;
-                            LastMechInput = 0;
-                            CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
-                            bWalking = false;
-                            break;
-
-                        case -1:
-                            if (LastMechInput == 1)
-                                break;
-                            LastMechInput = 1;
-                            CurrentWalk.UpdateClockMode(ClockMode.FOR);
-                            bWalking = true;
-                            break;
-                    }
-                    break;
-            }
-        }
-        void ToggleAnimations(ClockMode mode)
-        {
-            foreach (Sequence seq in Animations)
-            {
-                seq.ToggleSequence(mode);
-            }
-        }
-        void ZeroCurrentWalk()
-        {
-            if (CurrentWalkSet == null)
-                return;
-
-            if (CurrentWalk == null)
-                return;
-
-            bWalking = false;
-
-            CurrentWalkSet.UpdateFootLockStatus(ref DebugBinStatic);
-            CurrentWalkSet.ZeroJointSet();
-        }
-        void WalkToggle()
-        {
-            if (bWalking)
-                CurrentWalk.UpdateClockMode(OldWalkState);
-            else
-                CurrentWalk.UpdateClockMode(ClockMode.PAUSE);
+            return new Rotor((IMyMotorStator)jointBlock, data);
         }
         #endregion
 
         #region GUI METHODS
         void GUIUpdate(IMyTextPanel panel = null)
         {
-            //if (ButtonPanel != null && GUIPanel != null)
-            //{
             ButtonBuilder.Clear();
             ButtonBuilder.Append(RawButtonStringBuilder(CurrentGUIMode));
 
@@ -1776,8 +1669,6 @@ namespace IngameScript
 
             GUIBuilder.Clear();
             GUIBuilder.Append(FormattedGUIStringBuilder(guiData));
-            DebugScreens[1].WriteText(DebugBinStatic);
-            //}
         }
         bool DemoSelectedFrame()
         {
@@ -1930,7 +1821,7 @@ namespace IngameScript
                                 else
                                     cursor = 0;
 
-                                stringList.Add($"{Cursor[cursor]}    |{jFrameIndex}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].Joint.Name}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].LerpPoint}");
+                                stringList.Add($"{Cursor[cursor]}    |{jFrameIndex}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].Joint.Data.Name}:{JsetBin[jSetIndex].Sequences[seqIndex].Frames[frameIndex].Jframes[jFrameIndex].LerpPoint}");
                             }
                         }
                     }
@@ -1976,7 +1867,7 @@ namespace IngameScript
 
             try
             {
-                stringList.Add($"Walk-state: {CurrentWalk.ClockMode}");
+                stringList.Add($"Walk-state: {CurrentWalk.CurrentClockMode}");
                 stringList.Add($"Frame index: {CurrentWalk.CurrentFrameIndex}");
                 stringList.Add($"Lerp Speed: {CurrentWalk.CurrentClockSpeed}");
                 stringList.Add($"Left foot locked: {CurrentWalkSet.Feet[0].Locked}");
@@ -2051,6 +1942,9 @@ namespace IngameScript
 
                 case 2:
                     bIgnoreSave = !bIgnoreSave;
+                    bForceSave = true;
+                    Save();
+                    bForceSave = false;
                     break;
 
                 case 3:
@@ -2106,26 +2000,19 @@ namespace IngameScript
                     break;
 
                 case 5:
-                    bWalking = !bWalking;
-                    WalkToggle();
+                    CurrentWalk.ToggleClockPause();
                     break;
 
                 case 6:
-                    if (OldWalkState == ClockMode.FOR)
-                        OldWalkState = ClockMode.REV;
-                    else
-                        OldWalkState = ClockMode.FOR;
-                    WalkToggle();
+                    CurrentWalk.ToggleClockDirection();
                     break;
 
                 case 7:
-                    CurrentWalk.InitializeSeq(ClockMode.FOR, 0);
-                    OldWalkState = ClockMode.FOR;
-                    bWalking = true;
+                    CurrentWalk.InitializeSeq(ref DebugBinStatic);
                     break;
 
                 case 8:
-                    ZeroCurrentWalk();
+                    CurrentWalkSet.ZeroJointSet();
                     break;
 
                 case 9:
@@ -2382,7 +2269,7 @@ namespace IngameScript
                             JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Jframes[SelObjIndex[3]].ChangeStatorLerpPoint(value);
                         }
                         else
-                            JsetBin[SelObjIndex[0]].Joints[SelObjIndex[3]].Name = name;
+                            JsetBin[SelObjIndex[0]].Joints[SelObjIndex[3]].Data.Name = name;
                         break;
                 }
             }
@@ -2499,8 +2386,102 @@ namespace IngameScript
         }
         #endregion
 
-        #region UPATES 
+        #region UPATES
+        void ControlInput()
+        {
+            if (Control == null)
+            {
+                Echo("No Control!");
+                RotationBuffer = Vector3.Zero;
+                return;
+            }
 
+            switch (CurrentGUIMode)
+            {
+                case GUIMode.LIBRARY:
+                    switch ((int)Control.MoveIndicator.Z)
+                    {
+                        case -1:
+                            if (LastLibraryInput[0] == -1)
+                                break;
+                            LastLibraryInput[0] = -1;
+                            GUINavigation(GUINav.UP);
+                            GUIUpdate();
+                            break;
+
+                        case 0:
+                            if (LastLibraryInput[0] == 0)
+                                break;
+                            LastLibraryInput[0] = 0;
+                            break;
+
+                        case 1:
+                            if (LastLibraryInput[0] == 1)
+                                break;
+                            LastLibraryInput[0] = 1;
+                            GUINavigation(GUINav.DOWN);
+                            GUIUpdate();
+                            break;
+                    }
+                    switch ((int)Control.MoveIndicator.X)
+                    {
+                        case -1:
+                            if (LastLibraryInput[1] == -1)
+                                break;
+                            LastLibraryInput[1] = -1;
+                            GUINavigation(GUINav.BACK);
+                            GUIUpdate();
+                            break;
+
+                        case 0:
+                            if (LastLibraryInput[1] == 0)
+                                break;
+                            LastLibraryInput[1] = 0;
+                            break;
+
+                        case 1:
+                            if (LastLibraryInput[1] == 1)
+                                break;
+                            LastLibraryInput[1] = 1;
+                            GUINavigation(GUINav.SELECT);
+                            GUIUpdate();
+                            break;
+                    }
+                    break;
+
+                case GUIMode.CONTROL:
+                    RotationBuffer.X = LookScalar * Control.RotationIndicator.X;
+                    RotationBuffer.Y = LookScalar * Control.RotationIndicator.Y;
+                    RotationBuffer.Z = LookScalar * Control.RollIndicator;
+                    switch ((int)Control.MoveIndicator.Z)
+                    {
+                        case 1:
+                            if (LastMechInput == -1)
+                                break;
+                            LastMechInput = -1;
+                            CurrentWalk.SetClockMode(ClockMode.REV);
+                            //bWalking = true;
+                            break;
+
+                        case 0:
+                            if (LastMechInput == 0)
+                                break;
+                            LastMechInput = 0;
+                            CurrentWalk.SetClockMode(ClockMode.PAUSE);
+                            //bWalking = false;
+                            break;
+
+                        case -1:
+                            if (LastMechInput == 1)
+                                break;
+                            LastMechInput = 1;
+                            CurrentWalk.SetClockMode(ClockMode.FOR);
+                            //bWalking = true;
+                            break;
+                    }
+                    break;
+            }
+        }
         void WalkManager()
         {
             if (CurrentWalkSet == null)
@@ -2508,22 +2489,22 @@ namespace IngameScript
 
             CurrentWalkSet.UpdatePlane(ref DebugBinStream, ref RotationBuffer);
 
-            if (CurrentWalk == null ||
-                bWalking == false)
+            if (CurrentWalk == null)
                 return;
 
             CurrentWalk.UpdateSequence(ref DebugBinStream);
         }
-        void AnimationManager()
+        /*void AnimationManager()
         {
             if (Animations == null ||
                 Animations.Count == 0)
                 return;
+
             foreach (Sequence seq in Animations)
             {
                 seq.UpdateSequence(ref DebugBinStream);
             }
-        }
+        }*/
         void StatorManager()
         {
             if (JsetBin == null ||
@@ -2535,16 +2516,18 @@ namespace IngameScript
 
             foreach (JointSet set in JsetBin)
             {
-                foreach (Joint joint in set.Joints)
-                {
-                    joint.UpdateJoint(bStatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
-                }
+                set.UpdateFootLockStatus(ref DebugBinStream);
 
                 foreach (Foot foot in set.Feet)
                     foreach (Joint toe in foot.Toes)
                     {
                         toe.UpdateJoint(bStatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
                     }
+
+                foreach (Joint joint in set.Joints)
+                {
+                    joint.UpdateJoint(bStatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
+                }
             }
         }
         void DisplayManager()
@@ -2589,6 +2572,7 @@ namespace IngameScript
                 MatrixD T = CurrentWalkSet.CurrentPlane;
                 MatrixD L = CurrentWalkSet.Plane.WorldMatrix;
                 Vector3 B = CurrentWalkSet.CorrectBuffer;
+                Joint[] P = CurrentWalkSet.Feet[0].Planes;
 
                 DisplayManagerBuilder.Append(
                     $"Forward Target:\n{T.Forward.X:0.###}:{T.Forward.Y:0.###}:{T.Forward.Z:0.###}\n" +
@@ -2619,12 +2603,11 @@ namespace IngameScript
             {
                 DisplayManagerBuilder.Append("Mech Status:\n\n");
 
-                DisplayManagerBuilder.Append($"SampleWalkClockState: {CurrentWalk.ClockMode}\n");
+                DisplayManagerBuilder.Append($"SampleWalkClockState: {CurrentWalk.CurrentClockMode}\n");
                 DisplayManagerBuilder.Append($"CurrentWalkClockTime: {CurrentWalk.CurrentClockTime}\n");
                 DisplayManagerBuilder.Append($"CurrentWalkFrameIndex: {CurrentWalk.CurrentFrameIndex}\n");
                 DisplayManagerBuilder.Append($"CurrentLegsIgnoringFeet: {CurrentWalkSet.bIgnoreFeet}\n\n");
 
-                DisplayManagerBuilder.Append($"Walking: {bWalking}\n");
                 DisplayManagerBuilder.Append($"TargetActive: {bStatorTarget}\n");
                 DisplayManagerBuilder.Append($"StatorControlActive: {bStatorControl}\n");
                 DisplayManagerBuilder.Append($"Snapping: {bSnapping}\n");
@@ -2652,7 +2635,7 @@ namespace IngameScript
             {
                 DisplayManagerBuilder.Append("Debug Plus!:\n");
 
-                DisplayManagerBuilder.Append($"\n=-=-=-=-=-=-=\n{DebugBinStream.ToString()}");
+                DisplayManagerBuilder.Append($"\n=-=-=-=-=-=-=\n{DebugBinStream}");
             }
 
             catch
@@ -2748,20 +2731,18 @@ namespace IngameScript
                 bLoaded = true;
             }
 
-            DebugScreens[1].WriteText(DebugBinStatic.ToString());
+            DebugScreens[5].WriteText(DebugBinStatic);
 
             GUIUpdate();
 
-            DebugScreens[1].WriteText(DebugBinStatic);
+            DebugScreens[5].WriteText(DebugBinStatic);
 
-            ZeroCurrentWalk();
+            CurrentWalkSet.ZeroJointSet();
         }
         public void Main(string argument, UpdateType updateSource)
         {
             if (!bInitialized)
                 return;
-
-            DebugBinStream.Clear(); // MUST HAPPEN!
 
             switch (argument)
             {
@@ -2808,15 +2789,8 @@ namespace IngameScript
                     bStatorControl = !bStatorControl;
                     break;
 
-                case "ANIMATIONS":
-                    AnimationState = AnimationState == ClockMode.REV ? ClockMode.PAUSE : AnimationState + 1;
-                    ToggleAnimations(AnimationState);
-                    break;
-
                 case "INITIALIZE_WALK":
-                    CurrentWalk.InitializeSeq(ClockMode.FOR, 0);
-                    OldWalkState = ClockMode.FOR;
-                    bWalking = true;
+                    CurrentWalk.InitializeSeq(ref DebugBinStatic);
                     break;
 
                 case "INCREASE_SPEED":
@@ -2828,20 +2802,15 @@ namespace IngameScript
                     break;
 
                 case "ZERO_WALK":
-                    ZeroCurrentWalk();
+                    CurrentWalkSet.ZeroJointSet();
                     break;
 
                 case "TOGGLE_WALK_DIR":
-                    if (OldWalkState == ClockMode.FOR)
-                        OldWalkState = ClockMode.REV;
-                    else
-                        OldWalkState = ClockMode.FOR;
-                    WalkToggle();
+                    CurrentWalk.ToggleClockDirection();
                     break;
 
                 case "TOGGLE_WALK_PAUSE":
-                    bWalking = !bWalking;
-                    WalkToggle();
+                    CurrentWalk.ToggleClockPause();
                     break;
 
                 case "SAVE":
@@ -2872,23 +2841,30 @@ namespace IngameScript
 
             ControlInput();
             WalkManager();
-            AnimationManager();
+            //AnimationManager();
             StatorManager();
             DisplayManager();
+
+            DebugBinStream.Clear(); // MUST HAPPEN!
         }
+        /* Tolkens:
+
+        :  - Divider
+        &  - Options (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
+        #  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
+        $  - Sequence ($:Name:LerpSpeed)
+        %0 - KeyFrame (%0:Name)
+        %1 - JointFrame (%1:LerpPoint)
+
+        toe-pads = T:name:sInd:uInd:fInd:n/a
+           joint = J:name:sInd:uInd:n/a :n/a
+            grip = G:name:sInd:uInd:fInd:auxDir
+            roll = R:name:sInd:uInd:fInd:auxDir
+           pitch = P:name:sInd:uInd:fInd:auxDir
+             yaw = Y:name:sInd:uInd:fInd:auxDir
+        */
         public bool Load(ref StringBuilder debugBin)
         {
-            /*
-Tolkens:
-:  - Divider
-/n - Entry
-
-&  - Options (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
-#  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
-$  - Sequence ($:Name:LerpSpeed)
-%0 - KeyFrame (%0:Name)
-%1 - JointFrame (%1:LerpPoint)
- */
             JsetBin.Clear();
 
             string[] load = Me.CustomData.Split('\n');
@@ -2908,6 +2884,7 @@ $  - Sequence ($:Name:LerpSpeed)
                     switch (entry[0])
                     {
                         case "&":
+                            debugBin.Append("options:\n");
                             bIgnoreSave = bool.Parse(entry[1]);
                             bAutoDemo = bool.Parse(entry[2]);
                             bPlaneing = bool.Parse(entry[3]);
@@ -2916,6 +2893,7 @@ $  - Sequence ($:Name:LerpSpeed)
                             break;
 
                         case "#":
+                            debugBin.Append("constructing set...\n");
                             current = ConstructJointSet(ref DebugBinStatic, Control, int.Parse(entry[1]), entry[2], entry[3], bool.Parse(entry[4]));
                             if (current == null)
                                 break;
@@ -2923,15 +2901,20 @@ $  - Sequence ($:Name:LerpSpeed)
                             break;
 
                         case "%1":
+                            debugBin.Append("jFrame:\n");
                             jFrameBuffer.Add(new JointFrame(current.Joints[jFrameBuffer.Count], float.Parse(entry[1])));
+                            debugBin.Append("added!:\n");
                             break;
 
                         case "%0":
+                            debugBin.Append("kFrame:\n");
                             kFrameBuffer.Add(new KeyFrame(entry[1], jFrameBuffer.ToArray()));
                             jFrameBuffer.Clear();
+                            debugBin.Append("added!:\n");
                             break;
 
                         case "$":
+                            debugBin.Append("sequence:\n");
                             List<KeyFrame> newFrames = new List<KeyFrame>();
                             newFrames.AddRange(kFrameBuffer);
                             new Sequence(entry[1], current, newFrames, float.Parse(entry[2]));
@@ -2962,6 +2945,7 @@ $  - Sequence ($:Name:LerpSpeed)
             {
                 CurrentWalkSet = JsetBin[0];           //  >: |
                 CurrentWalk = JsetBin[0].Sequences[0]; //  >: |
+                CurrentWalk.InitializeSeq(ref DebugBinStatic);
                 return true;
             }
 
@@ -2969,26 +2953,6 @@ $  - Sequence ($:Name:LerpSpeed)
         }
         public void Save()
         {
-            /*
-            Tolkens:
-            :  - Divider
-            &  - Options (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
-            #  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
-            $  - Sequence ($:Name:LerpSpeed)
-            %0 - KeyFrame (%0:Name)
-            %1 - JointFrame (%1:LerpPoint)
-
-
-             */
-
-            /* toe-pads = T:name:sInd:uInd:fInd:n/a
-
-                  joint = J:name:sInd:uInd:n/a :n/a
-                   grip = G:name:sInd:uInd:fInd:dir
-                   roll = R:name:sInd:uInd:fInd:dir
-                  pitch = P:name:sInd:uInd:fInd:dir
-                    yaw = Y:name:sInd:uInd:fInd:dir */
-
             if (bIgnoreSave && !bForceSave)
                 return;
 
@@ -2999,7 +2963,7 @@ $  - Sequence ($:Name:LerpSpeed)
             foreach (JointSet set in JsetBin)
             {
                 foreach (Joint joint in set.Joints)
-                    joint.Connection.CustomData = $"J:{joint.Name}:{set.Index}:{joint.Index}:-1:0";
+                    joint.Connection.CustomData = $"J:{joint.Data.Name}:{set.Index}:{joint.Data.IDindex}:-1:0";
 
                 for (int i = 0; i < set.Feet.Length; i++)
                 {
@@ -3007,16 +2971,16 @@ $  - Sequence ($:Name:LerpSpeed)
                         continue;
 
                     if (set.Feet[i].Planes[0] != null)
-                        set.Feet[i].Planes[0].Connection.CustomData = $"P:{set.Feet[i].Planes[0].Name}:{set.Index}:{set.Feet[i].Planes[0].Index}:{i}:{set.Feet[i].Planes[0].AuxDirection}";
+                        set.Feet[i].Planes[0].Connection.CustomData = $"P:{set.Feet[i].Planes[0].Data.Name}:{set.Index}:{set.Feet[i].Planes[0].Data.IDindex}:{i}:{set.Feet[i].Planes[0].Data.AuxDirection}";
 
                     if (set.Feet[i].Planes[1] != null)
-                        set.Feet[i].Planes[1].Connection.CustomData = $"Y:{set.Feet[i].Planes[1].Name}:{set.Index}:{set.Feet[i].Planes[1].Index}:{i}:{set.Feet[i].Planes[1].AuxDirection}";
+                        set.Feet[i].Planes[1].Connection.CustomData = $"Y:{set.Feet[i].Planes[1].Data.Name}:{set.Index}:{set.Feet[i].Planes[1].Data.IDindex}:{i}:{set.Feet[i].Planes[1].Data.AuxDirection}";
 
                     if (set.Feet[i].Planes[2] != null)
-                        set.Feet[i].Planes[2].Connection.CustomData = $"R:{set.Feet[i].Planes[2].Name}:{set.Index}:{set.Feet[i].Planes[2].Index}:{i}:{set.Feet[i].Planes[2].AuxDirection}";
+                        set.Feet[i].Planes[2].Connection.CustomData = $"R:{set.Feet[i].Planes[2].Data.Name}:{set.Index}:{set.Feet[i].Planes[2].Data.IDindex}:{i}:{set.Feet[i].Planes[2].Data.AuxDirection}";
 
                     for (int j = 0; j < set.Feet[i].Toes.Length; j++)
-                        set.Feet[i].Toes[j].Connection.CustomData = $"G:{set.Feet[i].Toes[j].Name}:{set.Index}:{set.Feet[i].Toes[j].Index}:{i}:{set.Feet[i].Toes[j].AuxDirection}";
+                        set.Feet[i].Toes[j].Connection.CustomData = $"G:{set.Feet[i].Toes[j].Data.Name}:{set.Index}:{set.Feet[i].Toes[j].Data.IDindex}:{i}:{set.Feet[i].Toes[j].Data.AuxDirection}";
 
                     for (int j = 0; j < set.Feet[i].Pads.Length; j++)
                         set.Feet[i].Pads[j].CustomData = $"T:{set.Feet[i].Pads[j].Name}:{set.Index}:{j}:{i}:0";
