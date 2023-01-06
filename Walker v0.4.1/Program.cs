@@ -33,7 +33,7 @@ namespace IngameScript
         const string Digits = "0.###";
 
         const float Threshold = .02f;
-        const float VelocityScalar = .5f;
+        const float DEG2VEL = .5f;
         const float CorrectionScalar = .1f;
 
         const float MaxAccel = 0.3f;
@@ -365,7 +365,13 @@ namespace IngameScript
             }
             public void LoadAnimationFrame(JointFrame frame, bool forward = true, bool interrupt = false)
             {
-                if (forward)
+                int a = forward ? 0 : 1;
+                int b = forward ? 1 : 0;
+
+                LerpPoints[a] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[b];
+                LerpPoints[b] = frame.LerpPoint;
+
+                /*if (forward)
                 {
                     LerpPoints[0] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[1];
                     LerpPoints[1] = frame.LerpPoint;
@@ -374,7 +380,7 @@ namespace IngameScript
                 {
                     LerpPoints[1] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[0];
                     LerpPoints[0] = frame.LerpPoint;
-                }
+                }*/
             }
             public void OverwriteAnimTarget(double value)
             {
@@ -425,12 +431,8 @@ namespace IngameScript
                     }
                     else
                     {
-                        double scale = CorrectionMag * VelocityScalar;
-                        StatorVelocity = CorrectionDir * scale;
-
-                        if (scale < Threshold)
-                            StatorVelocity = 0;
-
+                        double scale = CorrectionMag * DEG2VEL;
+                        StatorVelocity = scale < Threshold ? 0 : CorrectionDir * scale;
                         StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > MaxAccel) ? OldVelocity + (MaxAccel * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
                         StatorVelocity = (Math.Abs(StatorVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(StatorVelocity) : StatorVelocity;
                     }
@@ -555,12 +557,12 @@ namespace IngameScript
                 base.LerpAnimationFrame(lerpTime, ref debugBin);
 
                 double mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
-                int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
-                mag = mag > 180 ? 360 - mag : mag;
-                mag *= (lerpTime * dir);
+                //int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
+                mag = mag > 180 ? 360 - mag : -mag;
+                mag *= lerpTime;
 
                 AnimTarget = LerpPoints[0] + mag;
-                AnimTarget = (AnimTarget > 360) ? AnimTarget - 360 : AnimTarget;
+                AnimTarget %= 360;
                 AnimTarget = (AnimTarget < 0) ? AnimTarget + 360 : AnimTarget;
             }
             public override void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
@@ -855,6 +857,14 @@ namespace IngameScript
                 {
                     double planarsum = joint.PlanarDots.GetDim(i) * planarRatios.GetDim(i) * (angleCorrections.GetDim(i) * RAD2DEG);
 
+                    /*
+                    
+                     1,0,0
+                     0,1,0
+                     0,0,-1
+
+                     */
+
                     // x = + / y = + / z = -
                     output = i == 2? output - planarsum : output + planarsum;
                 }
@@ -870,8 +880,6 @@ namespace IngameScript
             public List<IMyLandingGear> Pads = new List<IMyLandingGear>();
 
             public bool Locked = false;
-            //public bool Stepping = false;
-            //public bool Releasing = false;
             public bool Planeing;
             public Vector3 PlanarRatio;
 
@@ -1184,12 +1192,12 @@ namespace IngameScript
                 CurrentFrame = Frames[index];
                 CurrentClockTime = forward ? 0 : 1;
 
-                foreach (JointFrame joint in CurrentFrame.Jframes)
+                foreach (JointFrame jFrame in CurrentFrame.Jframes)
                 {
-                    if (joint.Joint == null)
+                    if (jFrame.Joint == null)
                         continue;
 
-                    joint.Joint.LoadAnimationFrame(joint, forward, interrupt);
+                    jFrame.Joint.LoadAnimationFrame(jFrame, forward, interrupt);
                 }
 
                 bFrameLoadForward = forward;
