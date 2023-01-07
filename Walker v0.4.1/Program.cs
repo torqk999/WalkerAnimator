@@ -161,8 +161,33 @@ namespace IngameScript
             "d"
         };
 
-        const string MainText = "Mech Control v0.5";
-        const string InfoText = "(InfoScreen)";
+        const string MainText = "Mech Control v0.5\n\n" +
+            "This system requires 1 hotbar\n" +
+            "Please enter into each button the following" +
+            "Runtime Argument for the PB:\n" +
+            "BUTTON:n\n" +
+            "(n >= 1 && n < 10)";
+        const string InfoText = "CustomData Tolkens:\n\n" +
+
+        ":  - Divider\n" +
+        "&  - Options(&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)\n" +
+        "@  - Foot(@:sInd:uInd:PadNames:GripNames:PlanarNames)\n" +
+        "#  - JointSet (#:Index:GroupName:Name:IgnoreFeet)\n" +
+        "$  - Sequence($:Name:LerpSpeed)\n" +
+        "%0 - KeyFrame(%0:Name)\n" +
+        "%1 - JointFrame(%1:LerpPoint)\n\n" +
+
+        "pad   = T:name:sInd:uInd:fInd (requires landing gear)\n" +
+        "joint = J:name:sInd:uInd:n/a  (requires joint candidate)\n" +
+        "grip  = G:name:sInd:uInd:fInd (requires joint candidate)\n\n" +
+
+        "Candidates: Rotors/Hinges (Pistons WIP!)\n\n" +
+
+        "Must be in Control Mode to move mech\n" +
+        "SnapShot the plane atleast once, and have only one foot locked\n" +
+        "When ready, go to options and toggle on planeing (turn off and on if not working)\n\n" +
+
+            "GoodLuck!";
         static readonly string[] Cursor = { "  ", "->" };
         #endregion
 
@@ -370,17 +395,6 @@ namespace IngameScript
 
                 LerpPoints[a] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[b];
                 LerpPoints[b] = frame.LerpPoint;
-
-                /*if (forward)
-                {
-                    LerpPoints[0] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[1];
-                    LerpPoints[1] = frame.LerpPoint;
-                }
-                else
-                {
-                    LerpPoints[1] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[0];
-                    LerpPoints[0] = frame.LerpPoint;
-                }*/
             }
             public void OverwriteAnimTarget(double value)
             {
@@ -443,9 +457,9 @@ namespace IngameScript
 
             public void UpdatePlanarDot(MatrixD plane)
             {
-                PlanarDots.X = Vector3.Dot(ReturnRotationAxis(), Vector3.Right);// plane.Right);//
-                PlanarDots.Y = Vector3.Dot(ReturnRotationAxis(), Vector3.Up);// plane.Up);//
-                PlanarDots.Z = Vector3.Dot(ReturnRotationAxis(), Vector3.Forward);// plane.Forward);//
+                PlanarDots.X = Vector3.Dot(ReturnRotationAxis(), Vector3.Right);
+                PlanarDots.Y = Vector3.Dot(ReturnRotationAxis(), Vector3.Up);
+                PlanarDots.Z = Vector3.Dot(ReturnRotationAxis(), Vector3.Forward);
             }
             public virtual double ReturnCurrentStatorPosition()
             {
@@ -2272,9 +2286,17 @@ namespace IngameScript
                     if (Control != null &&
                         i < 3)
                     {
-                        CockPitScreens[i] = Control.GetSurface(i);
-                        CockPitScreens[i].ContentType = ContentType.TEXT_AND_IMAGE;
-                        CockPitScreens[i].WriteText("");
+                        try
+                        {
+                            CockPitScreens[i] = Control.GetSurface(i);
+                            CockPitScreens[i].ContentType = ContentType.TEXT_AND_IMAGE;
+                            CockPitScreens[i].WriteText("");
+                        }
+                        catch
+                        {
+                            DebugBinStatic.Append("Incorrect CockpitType!\n" +
+                                "MechStatus and UserInput unavailable...\n");
+                        }
                     }
 
                     if (i < panels.Count)
@@ -2349,20 +2371,7 @@ namespace IngameScript
 
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
-        /* Tolkens:
-
-        :  - Divider
-        &  - Options  (&:IgnoreSave:AutoDemo:Planeing:StatorControl:StatorTarget)
-        @  - Foot     (@:sInd:uInd:PadNames:GripNames:PlanarNames)
-        #  - JointSet (#:Index:GroupName:Name:IgnoreFeet)
-        $  - Sequence ($:Name:LerpSpeed)
-        %0 - KeyFrame (%0:Name)
-        %1 - JointFrame (%1:LerpPoint)
-
-        toe-pads = T:name:sInd:uInd:fInd
-           joint = J:name:sInd:uInd:n/a 
-            grip = G:name:sInd:uInd:fInd
-        */
+        
         public bool Load(ref StringBuilder debugBin)
         {
             JsetBin.Clear();
