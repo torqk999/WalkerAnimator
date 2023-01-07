@@ -162,11 +162,15 @@ namespace IngameScript
         };
 
         const string MainText = "Mech Control v0.5\n\n" +
-            "This system requires 1 hotbar\n" +
-            "Please enter into each button the following" +
-            "Runtime Argument for the PB:\n" +
-            "BUTTON:n\n" +
+            "This system requires 1 hotbar.\n" +
+            "Please enter into each button\n" +
+            "the following RuntimeArgument\n" +
+            "for the PB:\n\n" +
+
+            "BUTTON:n\n\n" +
+
             "(n >= 1 && n < 10)";
+
         const string InfoText = "CustomData Tolkens:\n\n" +
 
         ":  - Divider\n" +
@@ -187,7 +191,7 @@ namespace IngameScript
         "SnapShot the plane atleast once, and have only one foot locked\n" +
         "When ready, go to options and toggle on planeing (turn off and on if not working)\n\n" +
 
-            "GoodLuck!";
+        "GoodLuck!";
         static readonly string[] Cursor = { "  ", "->" };
         #endregion
 
@@ -355,23 +359,25 @@ namespace IngameScript
             public JointData Data;
             public IMyMechanicalConnectionBlock Connection;
 
+            // Instance
             public double[] LerpPoints = new double[2];
             public bool Planeing = false;
             public bool Gripping = false;
 
-            //////////////////////////////
-
+            // Raw Target Values
             public double PlaneCorrection;
             public double AnimTarget;
             public double ActiveTarget;
 
+            // Ze Maths
             public int GripDirection;
             public int CorrectionDir;
             public double CorrectionMag;
             public double StatorVelocity;
-            public double LiteralVelocity;
+            public double LiteralVelocity; // Not used atm? but it works! : D
             public Vector3 PlanarDots;
 
+            // SlerpAlerpin
             double OldVelocity;
             double LastPosition;
             DateTime LastTime;
@@ -446,7 +452,15 @@ namespace IngameScript
                     else
                     {
                         double scale = CorrectionMag * DEG2VEL;
-                        StatorVelocity = scale < Threshold ? 0 : CorrectionDir * scale;
+                        StatorVelocity = CorrectionDir * scale;
+
+                        if (scale < Threshold)
+                            StatorVelocity = 0;
+
+
+                        //double scale = CorrectionMag * DEG2VEL;
+                        //StatorVelocity = scale < Threshold ? 0 : CorrectionDir * scale;
+
                         StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > MaxAccel) ? OldVelocity + (MaxAccel * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
                         StatorVelocity = (Math.Abs(StatorVelocity) > MaxSpeed) ? MaxSpeed * Math.Sign(StatorVelocity) : StatorVelocity;
                     }
@@ -571,12 +585,17 @@ namespace IngameScript
                 base.LerpAnimationFrame(lerpTime, ref debugBin);
 
                 double mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
-                //int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
-                mag = mag > 180 ? 360 - mag : -mag;
-                mag *= lerpTime;
+                int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
+
+                mag = mag > 180 ? 360 - mag : mag;
+                mag *= (lerpTime * dir);
+
+                //mag = mag > 180 ? 360 - mag : -mag;
+                //mag *= lerpTime;
 
                 AnimTarget = LerpPoints[0] + mag;
-                AnimTarget %= 360;
+                AnimTarget = (AnimTarget > 360) ? AnimTarget - 360 : AnimTarget;
+                //AnimTarget %= 360;
                 AnimTarget = (AnimTarget < 0) ? AnimTarget + 360 : AnimTarget;
             }
             public override void UpdateCorrectionDisplacement(ref StringBuilder debugBin)
@@ -753,7 +772,6 @@ namespace IngameScript
 
                     return true; // Lock successful
                 }
-
                 return false; // Lock failed
             }
 
@@ -1535,7 +1553,7 @@ namespace IngameScript
                 return output;
             }
 
-            if (!CapLines && CurrentGUIMode == GUIMode.CREATE)
+            if (!CapLines || CurrentGUIMode != GUIMode.CREATE)
                 for (int i = 2; i < input.Length; i++)
                     output += input[i] + "\n";
             else
