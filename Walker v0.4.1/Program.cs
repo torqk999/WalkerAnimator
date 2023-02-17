@@ -21,6 +21,47 @@ using VRageMath;
 namespace IngameScript
 {
 
+    /*
+        IMyCameraBlock EyeBall;
+        IMyTextSurface Surface;
+        IMySensorBlock Ear;
+        IMyOreDetector Nose;
+        StringBuilder Builder;
+
+        void foo()
+        {
+            List<MyDetectedEntityInfo> pings = new List<MyDetectedEntityInfo>();
+            Ear.DetectedEntities(pings);
+            Builder.Clear();
+
+            Builder.Append($"{Ear.CustomName}:{Ear.DetailedInfo}:\n\n");
+            MyDetectedEntityInfo info = EyeBall.Raycast(100);
+            Builder.Append($"{info.Name}:{info.Type}:{info.Relationship}:{info.EntityId}\n");
+
+            foreach (MyDetectedEntityInfo ping in pings)
+            {
+                //Builder.Append($"{ping.Name}:{ping.Type}:{ping.Relationship}:{ping.EntityId}\n");
+            }
+            Surface.WriteText(Builder);
+        }
+
+        Program()
+        {
+            Builder = new StringBuilder();
+            Surface = Me.GetSurface(0);
+            Surface.ContentType = ContentType.TEXT_AND_IMAGE;
+            Ear = (IMySensorBlock)GridTerminalSystem.GetBlockWithName("Sensor");
+            Nose = (IMyOreDetector)GridTerminalSystem.GetBlockWithName("Ore Detector");
+            EyeBall = (IMyCameraBlock)GridTerminalSystem.GetBlockWithName("Camera");
+            EyeBall.EnableRaycast = true;
+            Runtime.UpdateFrequency = UpdateFrequency.Update10;
+        }
+
+        public void Main(string argument, UpdateType updateSource)
+        {
+            foo();
+        }*/
+
     //SHA256:Gjr4HXe4MUH4BlceqwS7uN4QFotJRKzGo0VdsjjcQm4 clark_thomson2001@yahoo.com
 
     partial class Program : MyGridProgram
@@ -30,12 +71,14 @@ namespace IngameScript
         #region CONSTS
         const string CockpitName = "PILOT";
         const string LCDgroupName = "LCDS";
+        const string FlightGroupName = "FLIGHT";
+        const string FootSignature = "[FOOT]";
+        const string ToeSignature = "[TOE]";
         const string Digits = "0.###";
 
         const float Threshold = .02f;
         const float DEG2VEL = .5f;
         const float CorrectionScalar = .1f;
-
         const float MaxAccel = 0.3f;
         const float MaxSpeed = 10f;
         const float ClockIncrmentMag = 0.0005f;
@@ -46,14 +89,19 @@ namespace IngameScript
         const float LookScalar = 0.005f;
         const float RollScalar = 0.05f;
 
+        const int ReleaseCount = 50;
         const int SaveBlockCountSize = 5;
+
         const double RAD2DEG = 180 / Math.PI;
+        const double SAFETY = Math.PI / 4;
         #endregion
 
         #region REFS
 
+
         IMyCockpit Control;
-        
+
+        List<IMyFunctionalBlock> FlightGroup = new List<IMyFunctionalBlock>();
         List<JointSet> JsetBin = new List<JointSet>();
         List<Sequence> Animations;
 
@@ -64,11 +112,12 @@ namespace IngameScript
 
         #region LOGIC
 
+        bool Flying = true;
         bool IgnoreFeet = false;
         bool IgnoreSave = true;
         bool ForceSave = false;
         bool Initialized = false;
-        bool Planeing = false;
+        bool Planeing = true;
         bool Snapping = true;
         bool AutoDemo = false;
         bool StatorTarget = true;
@@ -77,6 +126,7 @@ namespace IngameScript
         Vector3 RotationBuffer;
         float SnapValue = 5;
         int LastMechInput;
+        int ReleaseTimer = 0;
         int[] LastLibraryInput = new int[2];
 
         #endregion
@@ -245,9 +295,9 @@ namespace IngameScript
             DEBUG_STREAM = 4,
             DEBUG_STATIC = 5,
             DIAGNOSTICS = 0,
-            SPLASH = 2,
-            CONTROLS = 1,
-            MECH_STATUS = 0
+            SPLASH = 1,
+            CONTROLS = 0,
+            MECH_STATUS = 2
         }
         #endregion
 
@@ -258,6 +308,14 @@ namespace IngameScript
             public string Name;
             public string GroupName;
             public IMyTerminalBlock Plane;
+
+            public SetData(string groupName, int index, IMyTerminalBlock plane = null)
+            {
+                Index = index;
+                GroupName = groupName;
+                Name = GroupName;
+                Plane = plane;
+            }
 
             public SetData(string input, IMyTerminalBlock plane = null)
             {
@@ -291,6 +349,22 @@ namespace IngameScript
             public int IDindex;
             public int FootIndex;
 
+            public JointData(int parentIndex, int iDindex, int footIndex)
+            {
+                TAG = ' ';
+                Name = "none";
+                ParentIndex = parentIndex;
+                IDindex = iDindex;
+                FootIndex = footIndex;
+            }
+            public JointData(char tAG, string name, int parentIndex, int iDindex, int footIndex)
+            {
+                TAG = tAG;
+                Name = name;
+                ParentIndex = parentIndex;
+                IDindex = iDindex;
+                FootIndex = footIndex;
+            }
             public JointData(string input)
             {
                 try
@@ -321,9 +395,15 @@ namespace IngameScript
             public bool Parsed;
             public int ParentIndex;
             public int FootIndex;
-            public string PadsGroupName;
-            public string GripsGroupName;
-            public string PlanarsGroupName;
+            public string FootGroupName;
+
+            public FootData(int parentIndex, int footIndex, string footGroupName)
+            {
+                ParentIndex = parentIndex;
+                FootIndex = footIndex;
+                FootGroupName = footGroupName;
+                Parsed = true;
+            }
 
             public FootData(string input)
             {
@@ -332,29 +412,39 @@ namespace IngameScript
                     string[] data = input.Split(':');
                     ParentIndex = int.Parse(data[1]);
                     FootIndex = int.Parse(data[2]);
-                    PadsGroupName = data[3];
-                    GripsGroupName = data[4];
-                    PlanarsGroupName = data[5];
+                    FootGroupName = data[3];
                     Parsed = true;
                 }
                 catch
                 {
                     ParentIndex = -1;
                     FootIndex = -1;
-                    PadsGroupName = "null";
-                    GripsGroupName = "null";
-                    PlanarsGroupName = "null";
+                    FootGroupName = null;
                     Parsed = false;
                 }
             }
 
             public string Save()
             {
-                return $"@:{ParentIndex}:{FootIndex}:{PadsGroupName}:{GripsGroupName}:{PlanarsGroupName}\n";
+                return $"@:{ParentIndex}:{FootIndex}:{FootGroupName}\n";
             }
         }
 
-        class Joint
+        class Debug
+        {
+            StringBuilder Debugger;
+
+            public Debug(StringBuilder debug)
+            {
+                Debugger = debug;
+            }
+
+            public void Dlog(string input, bool newLine = true)
+            {
+                Debugger.Append($"{input}{(newLine ? "\n" : "")}");
+            }
+        }
+        class Joint : Debug
         {
             public JointData Data;
             public IMyMechanicalConnectionBlock Connection;
@@ -382,15 +472,18 @@ namespace IngameScript
             double LastPosition;
             DateTime LastTime;
 
-            public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data)
+            public Joint(StringBuilder debug, IMyMechanicalConnectionBlock mechBlock, JointData data, bool overwrite) : base (debug)
             {
                 Connection = mechBlock;
                 mechBlock.Enabled = true;
                 Data = data;
+                if (overwrite)
+                    SaveData();
             }
 
             public void SaveData()
             {
+                Dlog($"Connection: {Connection != null}");
                 if (Connection != null)
                     Connection.CustomData = Data.Save();
             }
@@ -516,7 +609,7 @@ namespace IngameScript
             public IMyPistonBase PistonBase;
             public IMyMotorStator Reference;
 
-            public Piston(IMyPistonBase pistonBase, JointData data) : base(pistonBase, data)
+            public Piston(StringBuilder debug, IMyPistonBase pistonBase, JointData data, bool overwrite) : base(debug, pistonBase, data, overwrite)
             {
                 PistonBase = pistonBase;
             }
@@ -561,7 +654,7 @@ namespace IngameScript
         {
             public IMyMotorStator Stator;
 
-            public Rotor(IMyMotorStator stator, JointData data) : base(stator, data)
+            public Rotor(StringBuilder debug, IMyMotorStator stator, JointData data, bool overwrite) : base(debug, stator, data, overwrite)
             {
                 Stator = stator;
             }
@@ -624,13 +717,13 @@ namespace IngameScript
         {
             public IMyMotorStator Stator;
 
-            public Hinge(IMyMotorStator stator, JointData data) : base(stator, data)
+            public Hinge(StringBuilder debug, IMyMotorStator stator, JointData data, bool overwrite) : base(debug, stator, data, overwrite)
             {
                 Stator = stator;
             }
             public override Vector3 ReturnRotationAxis()
             {
-                return Stator.WorldMatrix.Up;// Down;
+                return Stator.WorldMatrix.Up;
             }
             public override double ReturnCurrentStatorPosition()
             {
@@ -728,11 +821,40 @@ namespace IngameScript
                 foreach (Foot foot in Feet)
                     foot.ToggleLock(false);
             }
-            public void UpdateFootLockStatus(ref StringBuilder debugBin)
+            public bool UpdateFootLockStatus(ref StringBuilder debugBin)
             {
+                Foot first = null;
+
                 foreach (Foot foot in Feet)
-                    foot.CheckLocked(ref debugBin);
+                    if (foot.CheckLocked(ref debugBin))
+                    {
+                        first = foot;
+                        break;
+                    }
+
+                if (first != null)
+                    foreach (Foot foot in Feet)
+                        if (foot.CheckLocked(ref debugBin) &&
+                            foot != first)
+                            foot.ToggleLock(false);
+
+                return first != null;
             }
+            public bool TouchDown()
+            {
+                if (Feet[0].CheckTouching())
+                {
+                    InitializeGrip();
+                    return true;
+                }
+                if (Feet[1].CheckTouching())
+                {
+                    InitializeGrip(false);
+                    return true;
+                }
+                return false;
+            }
+
             public bool CheckStep(float lerpTime, bool forward, ref StringBuilder debugBin)
             {
                 float triggerTime = forward ? lerpTime : 1 - lerpTime;
@@ -749,7 +871,7 @@ namespace IngameScript
                 bool footCheck = false;
 
                 // determine currently locked and checking foot
-                if (Feet[Stepping].CheckTouching(ref debugBin))
+                if (Feet[Stepping].CheckTouching())
                     Feet[Stepping].ToggleLock();
 
                 if (Feet[Stepping].CheckLocked(ref debugBin))
@@ -777,22 +899,22 @@ namespace IngameScript
 
             public bool InitFootStatus(ref StringBuilder debugBin)
             {
-                if (Feet[0].CheckTouching(ref debugBin) ||
+                if (Feet[0].CheckTouching() ||
                     Feet[0].CheckLocked(ref debugBin))
                 {
-                    InitializeGrip(ref debugBin);
+                    InitializeGrip();
                     return true;
                 }
-                if (Feet[1].CheckTouching(ref debugBin) ||
+                if (Feet[1].CheckTouching() ||
                     Feet[1].CheckLocked(ref debugBin))
                 {
-                    InitializeGrip(ref debugBin, false);
+                    InitializeGrip(false);
                     return true;
                 }
                 debugBin.Append("Neither Touching!\n");
                 return false;
             }
-            public bool InitializeGrip(ref StringBuilder debugBin, bool left = true)
+            public bool InitializeGrip(bool left = true)
             {
                 try
                 {
@@ -805,13 +927,11 @@ namespace IngameScript
                     Stepping = unlock;
 
                     string side = left ? "Left" : "Right";
-                    debugBin.Append($"{side} foot locked!\n");
 
                     return true;
                 }
                 catch
                 {
-                    debugBin.Append("Fail!\n");
                     return false;
                 }
             }
@@ -849,10 +969,10 @@ namespace IngameScript
                 bool MatchPiston(string cubeGridName, IMyPistonBase piston)
                 */
             }
-            public void UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 playerInput)
+            public bool UpdatePlane(ref StringBuilder debugBinStream, ref Vector3 playerInput)
             {
                 if (Data.Plane == null)
-                    return;
+                    return false;
 
                 playerInput *= CorrectionScalar;
 
@@ -866,6 +986,14 @@ namespace IngameScript
 
                 MatrixD.GetEulerAnglesXYZ(ref BufferPlane, out CorrectBuffer);
 
+                for (int i = 0; i < 3; i++)
+                    if (Math.Abs(CorrectBuffer.GetDim(i)) > SAFETY)
+                    {
+                        SnapShotPlane();
+                        break;
+                    }
+                        
+
                 foreach (Foot foot in Feet)
                 {
                     if (foot != null)
@@ -876,8 +1004,9 @@ namespace IngameScript
                             {
                                 foot.Planars[i].PlaneCorrection = GeneratePlaneCorrection(ref debugBinStream, foot.Planars[i], foot.PlanarRatio, CorrectBuffer);
                             }
-                    }      
-                }       
+                    }
+                }
+                return true;
             }
             double GeneratePlaneCorrection(ref StringBuilder debugBin, Joint joint, Vector3 planarRatios, Vector3 angleCorrections)
             {
@@ -898,7 +1027,7 @@ namespace IngameScript
                      */
 
                     // x = + / y = + / z = -
-                    output = i == 2? output - planarsum : output + planarsum;
+                    output = i == 2 ? output - planarsum : output + planarsum;
                 }
                 return output;
             }
@@ -932,35 +1061,26 @@ namespace IngameScript
             }
             public void ToggleLock(bool locking = true)
             {
-                ToggleGrip(locking);
+                foreach (IMyLandingGear gear in Pads)
+                {
+                    gear.AutoLock = locking;
+                    if (locking)
+                        gear.Lock();
+                    else
+                        gear.Unlock();
+                }
 
                 Locked = locking;
+                ToggleGrip(locking);
                 UpdateFootPlaneing();
-
-                foreach (IMyLandingGear gear in Pads)
-                {
-                    if (locking)
-                    {
-                        gear.AutoLock = true;
-                        gear.Lock();
-                    }
-
-                    if (!locking)
-                    {
-                        gear.AutoLock = false;
-                        gear.Unlock();
-                    }
-                }
             }
 
-            public bool CheckTouching(ref StringBuilder debug)
+            public bool CheckTouching()
             {
                 foreach (IMyLandingGear gear in Pads)
-                {
                     if (gear.LockMode == LandingGearMode.ReadyToLock)
                         return true;
-                }
-
+                
                 return false;
             }
             public bool CheckLocked(ref StringBuilder debug)
@@ -969,12 +1089,12 @@ namespace IngameScript
                 {
                     if (gear.LockMode == LandingGearMode.Locked)
                     {
-                        Locked = true;
+                        ToggleLock();
                         return true;
                     }
                 }
 
-                Locked = false;
+                ToggleLock(false);
                 return false;
             }
             void ToggleGrip(bool gripping = true)
@@ -1248,7 +1368,15 @@ namespace IngameScript
         #endregion
 
         #region CONSTRUCTIONS
-        JointSet ConstructJointSet(ref StringBuilder debugBin, SetData setData, List<Foot> feet)
+        void AssignFlightGroup()
+        {
+            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(FlightGroupName);
+            if (group == null)
+                return;
+
+            group.GetBlocksOfType(FlightGroup);
+        }
+        JointSet ConstructJointSet(SetData setData, List<Foot> feet)
         {
             JointSet newSet = new JointSet(setData);
             newSet.Feet.AddRange(feet);
@@ -1260,15 +1388,12 @@ namespace IngameScript
             if (setData.GroupName == null)
                 return null;
 
-            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(setData.GroupName);
-            if (group == null)
+            List<IMyTerminalBlock> blocks = BlockGroupGetter(setData.GroupName);
+            if (blocks == null)
                 return null;
 
             if (setData.Name == null)
                 setData.Name = setData.GroupName;
-
-            List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
-            group.GetBlocks(blocks);
 
             foreach (IMyTerminalBlock block in blocks)
             {
@@ -1280,12 +1405,114 @@ namespace IngameScript
                 if (block is IMyPistonBase ||
                     block is IMyMotorStator)
                 {
-                    BuildJoint(ref debugBin, newSet, (IMyMechanicalConnectionBlock)block);
+                    BuildJoint(newSet, (IMyMechanicalConnectionBlock)block);
                 }
             }
 
             newSet.SortJoints();
             return newSet;
+        }
+        JointSet NewJointSet(string groupName, int index)
+        {
+            List<IMyBlockGroup> groups = new List<IMyBlockGroup>();
+            List<IMyBlockGroup> feet = new List<IMyBlockGroup>();
+            IMyBlockGroup fullSet = null;
+            GridTerminalSystem.GetBlockGroups(groups);
+
+            foreach (IMyBlockGroup group in groups)
+            {
+                if (group.Name == groupName)
+                    fullSet = group;
+
+                else if (group.Name.Contains(FootSignature))
+                    feet.Add(group);
+            }
+
+            if (fullSet == null)
+                return null;
+
+            SetData sData = new SetData(fullSet.Name, index, Control);
+            JointSet newSet = new JointSet(sData);
+            List<IMyTerminalBlock> joints = BlockGroupGetter(fullSet);
+            int jointIndex = 0;
+            List<IMyTerminalBlock> footBuffer;
+
+            for (int f = 0; f < feet.Count; f++)
+            {
+                footBuffer = BlockGroupGetter(feet[f]);
+                if (footBuffer.Count < 1)
+                    continue;
+
+                Foot newFoot = new Foot(new FootData(sData.Index, f, feet[f].Name));
+                newSet.Feet.Add(newFoot);
+                int toeIndex = 0;
+
+                for (int b = 0; b < footBuffer.Count; b++)
+                {
+                    
+                    joints.Remove(footBuffer[b]); // Remove redundancies
+
+                    bool toe = footBuffer[b].CustomName.Contains(ToeSignature);
+                    JointData jData = new JointData(sData.Index, -1, f);
+
+                    if (footBuffer[b] is IMyMechanicalConnectionBlock)
+                    {
+                        jData.IDindex = toe ? toeIndex : jointIndex;
+                        jData.TAG = toe ? 'G' : 'P';
+                        jData.Name = $"[{(toe ? "TOE_GRIP" : "PLANE")}]";
+                        Joint newJoint = JointConstructor(DebugBinStatic, (IMyMechanicalConnectionBlock)footBuffer[b], jData, true);
+
+                        DebugBinStatic.Append($"Joint indices: {newJoint.Data.ParentIndex}:{newJoint.Data.IDindex}:{newJoint.Data.FootIndex}:{newJoint.Data.TAG}");
+
+                        if (toe)
+                        {
+                            newFoot.Toes.Add(newJoint);
+                            toeIndex++;
+                        }
+                            
+                        else
+                        {
+                            newFoot.Planars.Add(newJoint);
+                            newSet.Joints.Add(newJoint);
+                            jointIndex++;
+                        }
+                            
+                    }
+                    if (footBuffer[b] is IMyLandingGear)
+                    {
+                        jData.TAG = 'T';
+                        jData.Name = "[TOE_PAD]";
+                        BuildToePad(newFoot, (IMyLandingGear)footBuffer[b], jData);
+                    }
+                }
+            }
+
+            for (int j = 0; j < joints.Count; j++)
+            {
+                if (joints[j] is IMyMechanicalConnectionBlock)
+                {
+                    JointData jData = new JointData('J', "[JOINT]", sData.Index, jointIndex, -1);
+                    jointIndex++;
+                    newSet.Joints.Add(JointConstructor(DebugBinStatic, (IMyMechanicalConnectionBlock)joints[j], jData, true));
+                }
+            }
+
+            return newSet;
+        }
+        List<IMyTerminalBlock> BlockGroupGetter(string groupName)
+        {
+            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(groupName);
+            if (group == null)
+                return null;
+
+            return BlockGroupGetter(group);
+        }
+        List<IMyTerminalBlock> BlockGroupGetter(IMyBlockGroup group)
+        {
+
+            List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
+            group.GetBlocks(blocks);
+            return blocks;
         }
         bool CheckData(out JointData data, IMyTerminalBlock block, int setIndex)
         {
@@ -1316,67 +1543,64 @@ namespace IngameScript
         {
             JointData data;
 
-            if (!CheckData(out data, gear, set.Data.Index)
-                || data.FootIndex < 0
+            if (!CheckData(out data, gear, set.Data.Index))
+                return;
+
+            BuildToePad(set, gear, data);
+        }
+        void BuildToePad(JointSet set, IMyLandingGear gear, JointData data)
+        {
+            if (data.FootIndex < 0
                 || data.FootIndex >= set.Feet.Count)
                 return;
 
             Foot foot = set.Feet[data.FootIndex];
-
-            if (foot != null)
-                foot.Pads.Add(gear);
+            BuildToePad(foot, gear, data);
         }
-        void BuildJoint(ref StringBuilder debugBin, JointSet set, IMyMechanicalConnectionBlock jointBlock)
+        void BuildToePad(Foot foot, IMyLandingGear gear, JointData data)
+        {
+            if (foot != null)
+            {
+                foot.Pads.Add(gear);
+                //gear.CustomName = "TOE_PAD";
+            }
+        }
+
+        void BuildJoint(JointSet set, IMyMechanicalConnectionBlock jointBlock)
         {
             JointData jointData;
-            debugBin.Append($"Checking: {jointBlock.CustomName}\n");
 
             if (!CheckData(out jointData, jointBlock, set.Data.Index))
-            {
-                debugBin.Append("CheckFailed!\n");
                 return;
-            }
-
-            Joint newJoint = JointConstructor(jointBlock, jointData);
-            Foot foot = jointData.FootIndex < 0 || jointData.FootIndex >= set.Feet.Count ? null : set.Feet[jointData.FootIndex];
-
-            switch (jointData.TAG)
-            {
-                case 'P':
-                    set.Joints.Add(newJoint);
-                    if (foot == null)
-                        return;
-                    foot.Planars.Add(newJoint);
-                    break;
-
-                case 'J':
-                    set.Joints.Add(newJoint);
-                    break;
-
-                case 'G':
-                    if (foot == null)
-                        return;
-                    foot.Toes.Add(newJoint);
-                    break;
-
-                default:
-                    debugBin.Append("Invalid joint code!\n");
-                    return;
-            }
-            debugBin.Append("Joint added!\n");
+            
+            BuildJoint(set, jointBlock, jointData);
         }
-        Joint JointConstructor(IMyMechanicalConnectionBlock jointBlock, JointData data)
+        void BuildJoint(JointSet set, IMyMechanicalConnectionBlock jointBlock, JointData jointData)
+        {
+            Foot foot = jointData.FootIndex < 0 || jointData.FootIndex >= set.Feet.Count ? null : set.Feet[jointData.FootIndex];
+            Joint newJoint = JointConstructor(DebugBinStatic, jointBlock, jointData);
+            set.Joints.Add(newJoint);
+            if (foot != null)
+            {
+                if (jointData.TAG == 'G')
+                    foot.Toes.Add(newJoint);
+                if (jointData.TAG == 'P')
+                    foot.Planars.Add(newJoint);
+            }
+                
+        }
+        Joint JointConstructor(StringBuilder debug, IMyMechanicalConnectionBlock jointBlock, JointData data, bool overwrite = false)
         {
             if (jointBlock is IMyPistonBase)
-                return new Piston((IMyPistonBase)jointBlock, data);
+                return new Piston(debug, (IMyPistonBase)jointBlock, data, overwrite);
 
             if (!(jointBlock is IMyMotorStator))
                 return null;
 
             if (jointBlock.BlockDefinition.ToString().Contains("Hinge"))
-                return new Hinge((IMyMotorStator)jointBlock, data);
+                return new Hinge(debug, (IMyMotorStator)jointBlock, data, overwrite);
 
-            return new Rotor((IMyMotorStator)jointBlock, data);
+            return new Rotor(debug, (IMyMotorStator)jointBlock, data, overwrite);
         }
         #endregion
 
@@ -1385,11 +1609,11 @@ namespace IngameScript
         public static string MatrixToString(MatrixD matrix, string digits)
         {
             return
-                $"R:{matrix.Right  .X.ToString(digits)}|{matrix.Right  .Y.ToString(digits)}|{matrix.Right  .Z.ToString(digits)}\n" +
-                $"U:{matrix.Up     .X.ToString(digits)}|{matrix.Up     .Y.ToString(digits)}|{matrix.Up     .Z.ToString(digits)}\n" +
+                $"R:{matrix.Right.X.ToString(digits)}|{matrix.Right.Y.ToString(digits)}|{matrix.Right.Z.ToString(digits)}\n" +
+                $"U:{matrix.Up.X.ToString(digits)}|{matrix.Up.Y.ToString(digits)}|{matrix.Up.Z.ToString(digits)}\n" +
                 $"F:{matrix.Forward.X.ToString(digits)}|{matrix.Forward.Y.ToString(digits)}|{matrix.Forward.Z.ToString(digits)}\n";
         }
-        
+
         void AppendLibraryItem(GUILayer layer, int index, List<string> rawStrings, string itemName)
         {
             int cursor;
@@ -1410,6 +1634,14 @@ namespace IngameScript
                 DisplayManagerBuilder.Append(" ");
 
             DisplayManagerBuilder.Append("|" + index + ":" + itemName);
+            if (layer == GUILayer.JOINT)
+            {
+                try
+                {
+                    DisplayManagerBuilder.Append($"[{JsetBin[SelObjIndex[0]].Joints[index].Data.TAG}]");
+                }
+                catch { }
+            }
 
             rawStrings.Add(DisplayManagerBuilder.ToString());
         }
@@ -1459,7 +1691,7 @@ namespace IngameScript
 
                             for (int jFrameIndex = 0; jFrameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes.Count(); jFrameIndex++)
                             {
-                                AppendLibraryItem(GUILayer.JOINT, jFrameIndex, stringList, JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].Joint.Data.Name + ':' + JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].LerpPoint);
+                                AppendLibraryItem(GUILayer.JOINT, jFrameIndex, stringList, JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].Joint.Connection.CustomName/*Data.Name*/ + ':' + JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].LerpPoint);
                             }
                         }
                     }
@@ -1580,6 +1812,7 @@ namespace IngameScript
 
                 case 3:
                     Planeing = !Planeing;
+                    DebugBinStatic.Append($"Planeing: {Planeing}");
                     CurrentWalkSet.TogglePlaneing(Planeing);
                     break;
 
@@ -1610,6 +1843,12 @@ namespace IngameScript
         }
         void ControlMenuFunctions(int button)
         {
+            if (button == 9)
+            {
+                CurrentGUIMode = GUIMode.MAIN;
+                return;
+            }
+                
             if (CurrentWalkSet == null ||
                 CurrentWalk == null)
                 return;
@@ -1617,14 +1856,15 @@ namespace IngameScript
             switch (button)
             {
                 case 1:
-                    CurrentWalkSet.InitializeGrip(ref DebugBinStatic);
+                    CurrentWalkSet.InitializeGrip();
                     break;
 
                 case 2:
-                    CurrentWalkSet.InitializeGrip(ref DebugBinStatic, false);
+                    CurrentWalkSet.InitializeGrip(false);
                     break;
 
                 case 3:
+                    ReleaseTimer = ReleaseCount;
                     CurrentWalkSet.UnlockFeet();
                     break;
 
@@ -1646,10 +1886,6 @@ namespace IngameScript
 
                 case 8:
                     CurrentWalkSet.ZeroJointSet();
-                    break;
-
-                case 9:
-                    CurrentGUIMode = GUIMode.MAIN;
                     break;
             }
         }
@@ -1731,6 +1967,7 @@ namespace IngameScript
 
         void ButtonPress(int button)
         {
+            DebugBinStatic.Append($"Button:{button}\n");
             switch (CurrentGUIMode)
             {
                 case GUIMode.MAIN:
@@ -1797,15 +2034,27 @@ namespace IngameScript
         }
         void RefreshSelection(int incr = 0)
         {
+            int[] counts = new int[4];
             JointSet limb = null;
+            Sequence seq = null;
+
             if (JsetBin.Count > SelObjIndex[0])
                 limb = JsetBin[SelObjIndex[0]];
 
-            Sequence seq = null;
             if (limb != null && limb.Sequences.Count > SelObjIndex[1])
                 seq = limb.Sequences[SelObjIndex[1]];
 
-            int[] counts = new int[4];
+            if (seq == null || seq.Frames.Count < 1 &&
+                CurrentGUILayer > GUILayer.JOINT)
+                CurrentGUILayer = GUILayer.FRAME;
+
+            if (limb == null &&
+                CurrentGUILayer > GUILayer.JSET)
+                CurrentGUILayer = GUILayer.JSET;
+
+            else if (limb.Sequences.Count < 1 &&
+                CurrentGUILayer > GUILayer.SEQUENCE)
+                CurrentGUILayer = GUILayer.SEQUENCE;
 
             counts[0] = limb == null ? 0 : JsetBin.Count;
             counts[1] = limb == null ? 0 : limb.Sequences.Count;
@@ -1887,7 +2136,16 @@ namespace IngameScript
         void DemoSelectedFrame()
         {
             if (AutoDemo)
-                JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
+            {
+                try
+                {
+                    JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2], ref DebugBinStatic);
+                }
+                catch
+                {
+
+                }
+            }     
         }
         void LoadItem()
         {
@@ -1952,10 +2210,12 @@ namespace IngameScript
             switch (CurrentGUILayer)
             {
                 case GUILayer.JSET:
-                    /*SetData set = new SetData(); // <<<< NEEDS CHANGING!!! // build new set's index based on existing count for now, will need re-indexing when a set is removed
-                    JointSet newSet = ConstructJointSet(ref DebugBinStatic, set); 
-                    if (newSet != null)
-                        JsetBin.Add(newSet);*/
+                    string groupName = string.Empty;
+                    if (!UserInputString(ref groupName))
+                        return;
+                    if (groupName == null)
+                        return;
+                    JsetBin.Add(NewJointSet(groupName, JsetBin.Count)); // Testing....
                     break;
 
                 case GUILayer.SEQUENCE:
@@ -2094,7 +2354,7 @@ namespace IngameScript
                 case GUIMode.CONTROL:
 
                     RotationBuffer.X = LookScalar * -Control.RotationIndicator.Y;
-                    RotationBuffer.Y = LookScalar * Control.RotationIndicator.X;
+                    RotationBuffer.Y = LookScalar * -Control.RotationIndicator.X;
                     RotationBuffer.Z = RollScalar * -Control.RollIndicator;
 
                     switch ((int)Control.MoveIndicator.Z) //Walking
@@ -2128,7 +2388,8 @@ namespace IngameScript
             if (CurrentWalkSet == null)
                 return;
 
-            CurrentWalkSet.UpdatePlane(ref DebugBinStream, ref RotationBuffer);
+            if (Planeing)
+                CurrentWalkSet.UpdatePlane(ref DebugBinStream, ref RotationBuffer);
 
             if (CurrentWalk == null)
                 return;
@@ -2146,38 +2407,51 @@ namespace IngameScript
                 seq.UpdateSequence(ref DebugBinStream);
             }
         }
-        void StatorManager()
+        void PrimarySetManager()
         {
-            if (JsetBin == null ||
-                JsetBin.Count == 0)
+            if (CurrentWalkSet == null ||
+                !StatorControl)
                 return;
 
-            if (!StatorControl)
-                return;
+            Flying = !CurrentWalkSet.UpdateFootLockStatus(ref DebugBinStream);
+            ReleaseTimer -= 1;
+            ReleaseTimer = ReleaseTimer < 0 ? 0 : ReleaseTimer;
 
-            foreach (JointSet set in JsetBin)
+            if (Flying && ReleaseTimer <= 0 &&
+                CurrentWalkSet.TouchDown() &&
+                CurrentWalkSet.UpdateFootLockStatus(ref DebugBinStream))
             {
-                set.UpdateFootLockStatus(ref DebugBinStream);
-
-                foreach (Foot foot in set.Feet)
-                    foreach (Joint toe in foot.Toes)
-                    {
-                        toe.UpdateJoint(StatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
-                    }
-
-                foreach (Joint joint in set.Joints)
-                {
-                    joint.UpdateJoint(StatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
-                }
+                CurrentWalkSet.SnapShotPlane();
+                CurrentWalkSet.TogglePlaneing(true);
             }
+
+
+            foreach (Foot foot in CurrentWalkSet.Feet)
+                foreach (Joint toe in foot.Toes)
+                {
+                    toe.UpdateJoint(StatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
+                }
+
+            foreach (Joint joint in CurrentWalkSet.Joints)
+            {
+                joint.UpdateJoint(StatorTarget, Runtime.TimeSinceLastRun.TotalMilliseconds, ref DebugBinStream);
+            }
+        }
+        void FlightManager()
+        {
+            if (IgnoreFeet)
+                return;
+
+            foreach (IMyFunctionalBlock flightBlock in FlightGroup)
+                flightBlock.Enabled = Flying;
         }
         void DisplayManager()
         {
             try
             {
-                Echo($"GUIstatus: {GUIstatus(DebugScreens[(int)Screen.SPLASH], DebugScreens[(int)Screen.CONTROLS])}");
+                Echo($"GUIstatus: {GUIstatus(CockPitScreens[(int)Screen.SPLASH], CockPitScreens[(int)Screen.CONTROLS])}");
                 Echo($"Diagnostics: {Diagnostics(DebugScreens[(int)Screen.DIAGNOSTICS])}");
-                Echo($"MechStatus: {MechStatus(CockPitScreens[(int)Screen.MECH_STATUS])}");
+                Echo($"MechStatus: {MechStatus(DebugScreens[(int)Screen.MECH_STATUS])}");
                 Echo($"DebugStream: {DebugStream(DebugScreens[(int)Screen.DEBUG_STREAM])}");
             }
             catch
@@ -2207,17 +2481,17 @@ namespace IngameScript
             DisplayManagerBuilder.Clear();
             try
             {
+                DisplayManagerBuilder.Append($"Control: {Control != null}\n");
                 Vector3 B = CurrentWalkSet.CorrectBuffer;
                 List<Joint> P = CurrentWalkSet.Feet[1].Planars;
 
-                DisplayManagerBuilder.Append(
-                    $"RawInput:\n{Control.RotationIndicator.Y}:{Control.RotationIndicator.X}:{Control.RollIndicator}\n" +
-                    $"Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n" +
-                    $"Finals:\n{P[0].ActiveTarget:0.###}\n{P[1].ActiveTarget:0.###}\n{P[2].ActiveTarget:0.###}\n" +
-                    $"Stepping: {CurrentWalkSet.Stepping}\n" +
-                    $"Releasing: {CurrentWalkSet.Releasing}\n");
+                DisplayManagerBuilder.Append($"RawInput:\n{Control.RotationIndicator.Y}:{Control.RotationIndicator.X}:{Control.RollIndicator}\n");
+                DisplayManagerBuilder.Append($"Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n");
+                DisplayManagerBuilder.Append($"Finals:\n{P[0].ActiveTarget:0.###}\n{P[1].ActiveTarget:0.###}\n{P[2].ActiveTarget:0.###}\n");
+                DisplayManagerBuilder.Append($"Stepping: {CurrentWalkSet.Stepping}\n");
+                DisplayManagerBuilder.Append($"Releasing: {CurrentWalkSet.Releasing}\n");
 
-                for(int i = 0; i < CurrentWalkSet.Feet.Count; i++)
+                for (int i = 0; i < CurrentWalkSet.Feet.Count; i++)
                 {
                     DisplayManagerBuilder.Append($"Foot:{i} | Locked: {CurrentWalkSet.Feet[i].Locked}\n");
                 }
@@ -2294,6 +2568,7 @@ namespace IngameScript
                 SplashBuilder = new StringBuilder();
                 SaveData = new StringBuilder();
 
+                AssignFlightGroup();
                 Control = (IMyCockpit)GridTerminalSystem.GetBlockWithName(CockpitName);
                 IMyBlockGroup panelGroup = GridTerminalSystem.GetBlockGroupWithName(LCDgroupName);
                 List<IMyTextPanel> panels = new List<IMyTextPanel>();
@@ -2342,6 +2617,8 @@ namespace IngameScript
             {
                 CurrentWalkSet.InitFootStatus(ref DebugBinStatic);
                 CurrentWalkSet.ZeroJointSet();
+                CurrentWalkSet.SnapShotPlane();
+                CurrentWalkSet.TogglePlaneing(Planeing);
                 DebugBinStatic.Append("Load Success!\n");
             }
 
@@ -2384,12 +2661,13 @@ namespace IngameScript
 
             ControlInput();
             WalkManager();
-            StatorManager();
+            PrimarySetManager();
+            FlightManager();
             DisplayManager();
 
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
-        
+
         public bool Load(ref StringBuilder debugBin)
         {
             JsetBin.Clear();
@@ -2441,12 +2719,13 @@ namespace IngameScript
                         case "#":
                             debugBin.Append("constructing set...\n");
                             SetData set = new SetData(next, Control);
-                            current = ConstructJointSet(ref debugBin, set, footBuffer);
+                            current = ConstructJointSet(set, footBuffer);
                             if (current == null)
                             {
                                 debugBin.Append("set construction failed!\n");
                                 return false;
                             }
+                            debugBin.Append($"WalkSet joint count: {current.Joints.Count}\n");
                             JsetBin.Add(current);
                             footBuffer.Clear();
                             break;
