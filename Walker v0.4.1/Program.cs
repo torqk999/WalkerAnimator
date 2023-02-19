@@ -638,6 +638,7 @@ namespace IngameScript
                     return 0;
             }
         }
+
         class Joint : Root
         {
             public int FootIndex;
@@ -1045,7 +1046,7 @@ namespace IngameScript
             public Vector3D PlaneBuffer;
             public Vector3D TurnBuffer;
 
-            public bool Triggered = true;
+            public bool StepTrigger = true;
             public int Stepping;
             public int Releasing;
 
@@ -1150,10 +1151,10 @@ namespace IngameScript
                 float triggerTime = forward ? lerpTime : 1 - lerpTime;
 
                 // reset for the RS latch
-                if (Triggered)
+                if (StepTrigger)
                 {
                     if (triggerTime >= Program.StepThreshold.Current())
-                        Triggered = false;
+                        StepTrigger = false;
                     else
                         return false;
                 }
@@ -1169,7 +1170,7 @@ namespace IngameScript
 
                 if (footCheck) // Initial contact
                 {
-                    Triggered = true;
+                    StepTrigger = true;
 
                     if (Stepping != -1)
                     {
@@ -1519,9 +1520,7 @@ namespace IngameScript
             }
             public Sequence(string input, Program program, JointSet set, List<KeyFrame> buffer) : base(input, program)
             {
-                StaticDlog("Seq Constructor:");
                 JointSet = set;
-                StaticDlog($"Frames:{Frames != null}\nBuffer:{buffer != null}");
                 Frames.AddRange(buffer);
             }
 
@@ -3307,8 +3306,7 @@ namespace IngameScript
                 return;
 
             CurrentWalkSet = JsetBin[0];
-            CurrentWalkSet.InitFootStatus();
-            CurrentWalkSet.ZeroJointSet();
+            Planeing = CurrentWalkSet.InitFootStatus();
             CurrentWalkSet.TogglePlaneing(Planeing);
 
             if (CurrentWalkSet.Sequences == null ||

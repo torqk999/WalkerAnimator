@@ -117,3 +117,4 @@ F:\GIT_REPOS\Walker\WalkerAnimator\Walker v0.4.1\obj\x64\Debug\Walker v0.5.1.csp
 F:\GIT_REPOS\Walker\WalkerAnimator\Walker v0.4.1\obj\x64\Debug\Walker v0.5.1.csproj.CopyComplete
 F:\GIT_REPOS\Walker\WalkerAnimator\Walker v0.4.1\obj\x64\Debug\Walker v0.4.0.exe
 F:\GIT_REPOS\Walker\WalkerAnimator\Walker v0.4.1\obj\x64\Debug\Walker v0.4.0.pdb
+F:\GIT_REPOS\Walker\WalkerAnimator\Walker v0.4.1\obj\x64\Debug\Walker v0.5.1.csproj.AssemblyReference.cache
