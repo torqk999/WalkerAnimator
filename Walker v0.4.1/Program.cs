@@ -165,10 +165,16 @@ namespace IngameScript
         const string MagnetTag = "M";
         const string GripTag = "G";
 
-        const float Threshold = .02f;
+        const float VelThreshLimit = .02f;
+        const float DisThreshLimit = 5f;
         const float DEG2VEL = .5f;
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
+
+        const float MouseIncrementMag = 0.1f;
+        const float MouseSenseMin = 0.1f;
+        const float MouseSenseCap = 5f;
+        const float MouseSenseDef = 1f;
 
         const float MaxAccelIncrementMag = 0.1f;
         const float MaxAccelDef = 0.3f;
@@ -219,6 +225,7 @@ namespace IngameScript
         bool Flying = true;
         bool Planeing = false;
         bool ForceSave = false;
+        bool WithinTargetThreshold = false;
 
         public enum Option
         {
@@ -257,12 +264,14 @@ namespace IngameScript
         Setting StepThreshold;
         Setting MaxAcceleration;
         Setting MaxSpeed;
+        Setting MouseSensitivity;
         Setting SnappingValue;
 
         void SetupSettings()
         {
             StepThreshold = new Setting("Step Threshold", StepThresholdDef, StepThreshIncrementMag);
             MaxAcceleration = new Setting("Max Stator Acceleration", MaxAccelDef, MaxAccelIncrementMag, MaxAccelCap);
+            MouseSensitivity = new Setting("Mouse Sensitivity", MouseSenseDef, MouseIncrementMag, MouseSenseCap, MouseSenseMin);
             MaxSpeed = new Setting("Max Stator Speed", MaxSpeedDef, MaxSpeedIncrementMag, MaxSpeedCap);
             SnappingValue = new Setting("Snapping Increment", SnapValueDef, 1, SnapValueCap);
 
@@ -271,6 +280,7 @@ namespace IngameScript
                 StepThreshold,
                 MaxAcceleration,
                 MaxSpeed,
+                MouseSensitivity,
                 SnappingValue,
             };
 
@@ -533,7 +543,7 @@ namespace IngameScript
 
             public void Adjust(bool incr)
             {
-                Value = Value + Increment;
+                Value += incr? Increment : -Increment;
                 Clamp();
             }
 
@@ -719,13 +729,13 @@ namespace IngameScript
                 AnimTarget = value;
             }
 
-            public void UpdateJoint(bool activeTargetTracking)
+            public bool UpdateJoint(bool activeTargetTracking)
             {
                 UpdateLiteralVelocity();
                 if (!activeTargetTracking)
                 {
                     UpdateStatorVelocity(activeTargetTracking);
-                    return;
+                    return true;
                 }
 
                 ActiveTarget = AnimTarget;
@@ -739,6 +749,7 @@ namespace IngameScript
                 }
 
                 UpdateStatorVelocity(activeTargetTracking);
+                return DisThreshold();
             }
             void UpdateLiteralVelocity()
             {
@@ -760,7 +771,8 @@ namespace IngameScript
                         double scale = CorrectionMag * DEG2VEL;
                         StatorVelocity = CorrectionDir * scale;
 
-                        if (scale < Threshold)
+                        if (VelThreshold(scale))
+                        //if (scale < VelThreshLimit)
                             StatorVelocity = 0;
 
                         StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > Program.MaxAcceleration.Current()) ? OldVelocity + (Program.MaxAcceleration.Current() * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
@@ -772,7 +784,14 @@ namespace IngameScript
 
                 UpdateStator();
             }
-
+            public bool VelThreshold(double scale)
+            {
+                return scale < VelThreshLimit;
+            }
+            public bool DisThreshold()
+            {
+                return CorrectionMag < DisThreshLimit;
+            }
             public void UpdatePlanarDot(MatrixD plane)
             {
                 PlanarDots.X = Vector3.Dot(ReturnRotationAxis(), plane.Right);
@@ -1189,6 +1208,9 @@ namespace IngameScript
             }
             public bool InitFootStatus()
             {
+                foreach (Foot foot in Feet)
+                    foot.GearInit();
+
                 if (Feet[0].CheckTouching() ||
                     Feet[0].CheckLocked())
                 {
@@ -1271,12 +1293,13 @@ namespace IngameScript
                 UpdatePlaneBuffer(playerInput);
                 UpdateTurnBuffer(playerTurn);
 
+                bool safety = false;
                 for (int i = 0; i < 3; i++)
                     if (Math.Abs(PlaneBuffer.GetDim(i)) > SAFETY)
                     {
                         //TogglePlaneing(false);
                         SnapShotPlane();
-                        return false;
+                        safety = true;
                     }
 
                 foreach (Foot foot in Feet)
@@ -1287,6 +1310,12 @@ namespace IngameScript
                         for (int i = 0; i < foot.Planars.Count; i++)
                             if (foot.Planars[i] != null)
                             {
+                                if (safety)
+                                {
+                                    foot.Planars[i].PlaneCorrection = 0;
+                                    continue;
+                                }
+
                                 if (foot.Planars[i].TAG == TurnTag && !foot.Locked)
                                 {
                                     foot.Planars[i].PlaneCorrection = GeneratePlaneCorrection(foot.Planars[i], foot.PlanarRatio, TurnBuffer);
@@ -1423,7 +1452,6 @@ namespace IngameScript
                 ToggleGrip(locking);
                 UpdateFootPlaneing(Planeing);
             }
-
             public bool CheckTouching()
             {
                 foreach (Magnet magnet in Magnets)
@@ -1677,7 +1705,8 @@ namespace IngameScript
                     case ClockMode.FOR:
                         forward = true;
                         CurrentClockTime += ClockSpeed.Current();
-                        if (CurrentClockTime >= 1 ||
+                        CurrentClockTime = CurrentClockTime < 1 ? CurrentClockTime : 1;
+                        if ((CurrentClockTime == 1 && Program.WithinTargetThreshold)||
                             (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
                         {
                             CurrentClockTime = 0;
@@ -1695,7 +1724,8 @@ namespace IngameScript
                     case ClockMode.REV:
                         forward = false;
                         CurrentClockTime -= ClockSpeed.Current();
-                        if (CurrentClockTime <= 0 ||
+                        CurrentClockTime = CurrentClockTime > 0 ? CurrentClockTime : 0;
+                        if ((CurrentClockTime == 0 && Program.WithinTargetThreshold) ||
                             (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
                         {
                             CurrentClockTime = 1;
@@ -2850,6 +2880,10 @@ namespace IngameScript
 
                     RotationBuffer.X = LookScalar * -Control.RotationIndicator.Y;
                     RotationBuffer.Y = LookScalar * -Control.RotationIndicator.X;
+
+                    RotationBuffer.X = RotationBuffer.X < MouseSensitivity.Current() ? RotationBuffer.X : MouseSensitivity.Current();
+                    RotationBuffer.Y = RotationBuffer.Y < MouseSensitivity.Current() ? RotationBuffer.Y : MouseSensitivity.Current();
+
                     RotationBuffer.Z = RollScalar * -Control.RollIndicator;
                     TurnBuffer = Control.MoveIndicator.X;
 
@@ -2910,9 +2944,17 @@ namespace IngameScript
                 !Check(Option.STATOR_CONTROL))
                 return;
 
-            foreach (Joint joint in CurrentWalkSet.Joints)
-                joint.UpdateJoint(Check(Option.STATOR_TARGET));
+            WithinTargetThreshold = true;
 
+            foreach (Joint joint in CurrentWalkSet.Joints)
+            {
+                if (!joint.UpdateJoint(Check(Option.STATOR_TARGET)))
+                {
+                    //WithinTargetThreshold = false;
+                }
+
+            }
+                
             if (Check(Option.IGNORE_FEET))
                 return;
 
