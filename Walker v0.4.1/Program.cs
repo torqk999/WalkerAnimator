@@ -220,6 +220,16 @@ namespace IngameScript
 
         #region LOGIC
 
+        GUIMode CurrentGUIMode = GUIMode.MAIN;
+        GUILayer CurrentGUILayer = GUILayer.JSET;
+        //GUILayer JsetGUILayer = GUILayer.SEQUENCE;
+
+        int CursorIndex = 0;
+        int CurrentSetting = 0;
+        int LineBufferSize = 6;
+        int[] SelObjIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
+
+        bool CapLines = true;
         bool Snapping = true;
         bool Initialized = false;
         bool Flying = true;
@@ -311,16 +321,6 @@ namespace IngameScript
         #endregion
 
         #region GUI VARS
-        GUIMode CurrentGUIMode = GUIMode.MAIN;
-        GUILayer CurrentGUILayer = GUILayer.JSET;
-        //GUILayer JsetGUILayer = GUILayer.SEQUENCE;
-
-        bool CapLines = true;
-        int CursorIndex = 0;
-        int CurrentSetting = 0;
-        int LineBufferSize = 6;
-        int[] SelObjIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
-
         static readonly string[] MainMenuButtons =
         {
             "Info",
