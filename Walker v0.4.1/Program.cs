@@ -64,10 +64,13 @@ namespace IngameScript
 
     //SHA256:Gjr4HXe4MUH4BlceqwS7uN4QFotJRKzGo0VdsjjcQm4 clark_thomson2001@yahoo.com
     #region TODO
-    /* Emergency override? (Threshold, Reaction Protocol)
-     * Adjustable rotor limits? (Max_Speed, Max_Accel)
-     * Piston API!!! (can't avoid it much longer Sam...)
-     * Force differentials? (Assist servo actuation, perhaps through lerp itself?)
+    /* Emergency override? (Threshold, Reaction Protocol) || FIXED
+     * Adjustable rotor limits? (Max_Speed, Max_Accel) || BUILT
+     * Piston API!!! (can't avoid it much longer Sam...) || LOW PRIORITY
+     * Joint Syncing (for piston/redundant linking) || LOW PRIORITY
+     * Setup distribution (limit block constructions, refer to grid manager) || HIGH PRIORITY
+     * Force differentials? (Assist servo actuation, perhaps through lerp itself?) || HIGH PRIORITY
+     * Custom Frame Lengths (Variable lerp time for the animation clock) || Pending...
      */
     #endregion
 
