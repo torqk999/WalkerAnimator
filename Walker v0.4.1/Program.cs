@@ -202,6 +202,8 @@ namespace IngameScript
         const float RollScalar = 0.05f;
 
         const int ReleaseCount = 50;
+        const int LoadLineCap = 20;
+        const int LoadJointCap = 20;
 
         const double RAD2DEG = 180 / Math.PI;
         const double SAFETY = Math.PI / 4;
@@ -217,6 +219,11 @@ namespace IngameScript
 
         Sequence CurrentWalk;
         JointSet CurrentWalkSet;
+        JointSet SetBuffer;
+        List<IMyTerminalBlock> BlockBuffer;
+        List<Foot> FeetBuffer;
+        string SetDataBuffer;
+        int SetBufferIndex;
         RootSort SORT = new RootSort();
 
         #endregion
@@ -232,6 +239,8 @@ namespace IngameScript
         int LineBufferSize = 6;
         int[] SelObjIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
 
+        bool LoadingData = true;
+        bool BuildingJoints = false;
         bool CapLines = true;
         bool Snapping = true;
         bool Initialized = false;
@@ -339,16 +348,34 @@ namespace IngameScript
         };
         static readonly string[] CreateMenuButtons =
         {
-            "Change Snapping",
-            "Decrement",
-            "Increment",
+            
             "Load Item",
             "Add Item",
             "Insert Item",
             "Delete Item",
-            "Edit Item",
+            "Rename Item",
+            "Toggle Stator Target",
+            "Edit Menu",
             "Main Menu",
 
+            /*"Up List",
+            "Down List",
+            "Up Directory",
+            "Open Directory"*/
+        };
+        static readonly string[] EditorMenuButtons =
+        {
+            "Increment",
+            "Decrement",
+            "Snapping Increase",
+            "Snapping Decrease",
+            "Overwrite Value",
+            "Set Snapping",
+            "Create Menu",
+            "Main Menu"
+        };
+        static readonly string[] LibraryMenuInputs =
+        {
             "Up List",
             "Down List",
             "Up Directory",
@@ -373,7 +400,9 @@ namespace IngameScript
             "Toggle stator target",
             "Toggle auto demo",
             "Main Menu",
-
+        };
+        static readonly string[] OptionMenuInputs =
+        {
             "Next Setting",
             "Prev Setting",
             "Increase Setting",
@@ -385,6 +414,7 @@ namespace IngameScript
             MainMenuButtons,
             InfoMenuButtons,
             CreateMenuButtons,
+            EditorMenuButtons,
             ControlMenuButtons,
             OptionsMenuButtons
         };
@@ -454,6 +484,7 @@ namespace IngameScript
             MAIN,
             INFO,
             CREATE,
+            EDIT,
             CONTROL,
             OPTIONS
         }
@@ -1810,13 +1841,13 @@ namespace IngameScript
             if (newSet.GroupName == null)
                 return null;
 
-            List<IMyTerminalBlock> blocks = BlockGroupGetter(newSet.GroupName);
-            if (blocks == null)
+            BlockBuffer = BlockGroupGetter(newSet.GroupName);
+            if (BlockBuffer == null)
                 return null;
 
             newSet.Feet.AddRange(footBuffer);
 
-            foreach (IMyTerminalBlock block in blocks)
+            /*foreach (IMyTerminalBlock block in blocks)
             {
                 if (block is IMyLandingGear)
                 {
@@ -1830,8 +1861,50 @@ namespace IngameScript
                 }
             }
 
-            newSet.Sort();
+            newSet.Sort();*/
             return newSet;
+        }
+
+        bool LoadJoints()
+        {
+            if (SetBuffer == null)
+                SetBuffer = LoadJointSet(SetDataBuffer, Control, FeetBuffer);
+
+            if (SetBuffer == null ||
+                BlockBuffer == null)
+            {
+                Write(Screen.DEBUG_STATIC, "Set load failed!\n", true);
+                return true;
+            }
+
+            if (BlockBuffer.Count < 1)
+            {
+                Write(Screen.DEBUG_STATIC, "Nothing to load!\n", true);
+                return true;
+            }
+
+            for (int i = SetBufferIndex; i < BlockBuffer.Count ; i++)
+            {
+                if (i >= SetBufferIndex + LoadJointCap)
+                {
+                    SetBufferIndex = i;
+                    return false;
+                }
+
+                if (BlockBuffer[i] is IMyLandingGear)
+                {
+                    LoadMagnet(SetBuffer, (IMyLandingGear)BlockBuffer[i]);
+                }
+
+                if (BlockBuffer[i] is IMyPistonBase ||
+                    BlockBuffer[i] is IMyMotorStator)
+                {
+                    LoadJoint(SetBuffer, (IMyMechanicalConnectionBlock)BlockBuffer[i]);
+                }
+            }
+
+            SetBuffer.Sort();
+            return true;
         }
 
         JointSet NewJointSet(string groupName, int index)
@@ -2211,12 +2284,21 @@ namespace IngameScript
 
             for (int i = 0; i < AllButtons[(int)mode].Length; i++)
             {
-                string header =
-                    mode == GUIMode.CREATE && i > 8 ? InputLabels[i - 9] :
-                    mode == GUIMode.OPTIONS && i > 5 ? InputLabels[i - 6] :
-                    (i + 1).ToString();
-                DisplayManagerBuilder.Append($"{header} - {AllButtons[(int)mode][i]}\n");
+                DisplayManagerBuilder.Append($"{i + 1} - {AllButtons[(int)mode][i]}\n");
             }
+
+            if (mode == GUIMode.CREATE ||
+                mode == GUIMode.EDIT)
+                for (int i = 0; i < LibraryMenuInputs.Length; i++)
+                {
+                    DisplayManagerBuilder.Append($"{InputLabels[i]} - {LibraryMenuInputs[i]}\n");
+                }
+
+            if(mode == GUIMode.OPTIONS)
+                for (int i = 0; i < OptionMenuInputs.Length; i++)
+                {
+                    DisplayManagerBuilder.Append($"{InputLabels[i]} - {OptionMenuInputs}\n");
+                }
 
             return DisplayManagerBuilder.ToString();
         }
@@ -2363,12 +2445,49 @@ namespace IngameScript
                     break;
             }
         }
-        void LibraryMenuFunctions(int button)
+        void CreateMenuFunctions(int button)
         {
             switch (button)
             {
                 case 1:
-                    ChangeSnappingValue();
+                    LoadItem();
+                    break;
+
+                case 2:
+                    InsertItem();
+                    break;
+
+                case 3:
+                    InsertItem(false); //add
+                    break;
+
+                case 4:
+                    DeleteItem();
+                    break;
+
+                case 5:
+                    EditItem();
+                    break;
+
+                case 6:
+                    Toggle(Option.STATOR_TARGET);
+                    break;
+
+                case 7:
+                    CurrentGUIMode = GUIMode.EDIT;
+                    break;
+
+                case 8:
+                    CurrentGUIMode = GUIMode.MAIN;
+                    break;
+            }
+        }
+        void EditMenuFunctions(int button)
+        {
+            switch(button)
+            {
+                case 1:
+                    IncrementLerpPoint(true);
                     break;
 
                 case 2:
@@ -2376,30 +2495,26 @@ namespace IngameScript
                     break;
 
                 case 3:
-                    IncrementLerpPoint(true);
+                    SnappingValue.Adjust(true);
                     break;
 
                 case 4:
-                    LoadItem();
+                    SnappingValue.Adjust(false);
                     break;
 
                 case 5:
-                    InsertItem();
+                    ChangeSnappingValue();
                     break;
 
                 case 6:
-                    InsertItem(false);
-                    break;
-
-                case 7:
-                    DeleteItem();
-                    break;
-
-                case 8:
                     EditItem();
                     break;
 
-                case 9:
+                case 7:
+                    CurrentGUIMode = GUIMode.CREATE;
+                    break;
+
+                case 8:
                     CurrentGUIMode = GUIMode.MAIN;
                     break;
             }
@@ -2419,7 +2534,11 @@ namespace IngameScript
                     break;
 
                 case GUIMode.CREATE:
-                    LibraryMenuFunctions(button);
+                    CreateMenuFunctions(button);
+                    break;
+
+                case GUIMode.EDIT:
+                    EditMenuFunctions(button);
                     break;
 
                 case GUIMode.CONTROL:
@@ -2516,6 +2635,7 @@ namespace IngameScript
             string[] guiData = null;
             switch (CurrentGUIMode)
             {
+                case GUIMode.EDIT:
                 case GUIMode.CREATE:
                     guiData = LibraryStringBuilder();
                     DemoSelectedFrame();
@@ -2838,6 +2958,7 @@ namespace IngameScript
             switch (CurrentGUIMode)
             {
                 case GUIMode.CREATE:
+                case GUIMode.EDIT:
                     if (LastMenuInput[0] != z)
                     {
                         LastMenuInput[0] = z;
@@ -3154,7 +3275,7 @@ namespace IngameScript
                 return;
             }
 
-            if (!Load(ref DebugBinStatic))
+            /*if (Load() == -1)
             {
                 DebugBinStatic.Append("Load Failed!\n");
             }
@@ -3162,7 +3283,7 @@ namespace IngameScript
             {
                 Startup();
                 DebugBinStatic.Append("Load Success!\n");
-            }
+            }*/
 
             GUIUpdate();
 
@@ -3173,6 +3294,19 @@ namespace IngameScript
             if (!Initialized)
                 return;
 
+            if (BuildingJoints)
+            {
+
+            }
+
+            if (LoadingData)
+            {
+                if (Load() == -1)
+                    LoadingData = false;
+
+                return;
+            }
+
             switch (argument)
             {
                 case "SAVE":
@@ -3182,7 +3316,7 @@ namespace IngameScript
                     break;
 
                 case "LOAD":
-                    Load(ref DebugBinStatic);
+                    Load();
                     Write(Screen.DEBUG_STATIC, DebugBinStatic);
                     break;
 
@@ -3215,13 +3349,13 @@ namespace IngameScript
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
 
-        public bool Load(ref StringBuilder debugBin)
+        public int Load()
         {
             JsetBin.Clear();
 
             string[] load = Me.CustomData.Split('\n');
 
-            debugBin.Append($"Load Lines Length: {load.Length}\n");
+            DebugBinStatic.Append($"Load Lines Length: {load.Length}\n");
 
             List<JointFrame> jFrameBuffer = new List<JointFrame>();
             List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
@@ -3235,98 +3369,103 @@ namespace IngameScript
             {
                 try
                 {
-                    debugBin.Append("next load line...\n");
+                    DebugBinStatic.Append("next load line...\n");
                     string[] entry = next.Split(':');
-                    debugBin.Append($"op-code: {entry[0]}\n");
+                    DebugBinStatic.Append($"op-code: {entry[0]}\n");
 
                     switch (entry[0])
                     {
                         case OptionsTag:
-                            debugBin.Append("options:");
+                            DebugBinStatic.Append("options:");
                             LoadOptions(next);
-                            debugBin.Append(" loaded!\n");
+                            DebugBinStatic.Append(" loaded!\n");
                             break;
 
                         case SettingsTag:
-                            debugBin.Append("Settings:");
+                            DebugBinStatic.Append("Settings:");
                             LoadSettings(next);
-                            debugBin.Append(" loaded!\n");
+                            DebugBinStatic.Append(" loaded!\n");
                             break;
 
                         case FootTag:
-                            debugBin.Append("constructing foot...\n");
+                            DebugBinStatic.Append("constructing foot...\n");
                             Foot newFoot = new Foot(next, this);
                             if (newFoot.BUILT)
                             {
                                 footBuffer.Add(newFoot);
-                                debugBin.Append("foot constructed!\n");
+                                DebugBinStatic.Append("foot constructed!\n");
                             }
                             else
-                                debugBin.Append("foot construction failed!\n");
+                                DebugBinStatic.Append("foot construction failed!\n");
                             break;
 
                         case JointSetTag:
                             if (buildingSet)
                             {
-                                debugBin.Append("completing set...\n");
+                                DebugBinStatic.Append("completing set...\n");
                                 current.Sequences.AddRange(sequenceBuffer);
                                 sequenceBuffer.Clear();
                                 buildingSet = false;
                                 break;
                             }
 
-                            debugBin.Append("constructing set...\n");
-                            current = LoadJointSet(next, Control, footBuffer);
+                            DebugBinStatic.Append("constructing set...\n");
+
+                            BuildingJoints = true;
+
+                            return 0;
+
+                            /*current = LoadJointSet(next, Control, footBuffer);
 
                             if (current == null)
                             {
-                                debugBin.Append("set construction failed!\n");
+                                DebugBinStatic.Append("set construction failed!\n");
                                 return false;
                             }
 
-                            debugBin.Append($"WalkSet joint count: {current.Joints.Count}\n");
+                            DebugBinStatic.Append($"WalkSet joint count: {current.Joints.Count}\n");
                             JsetBin.Add(current);
                             footBuffer.Clear();
                             buildingSet = true;
                             
-                            break;
+                            break;*/
 
                         case JframeTag:
-                            debugBin.Append("jFrame:");
+                            DebugBinStatic.Append("jFrame:");
                             JointFrame newJframe = new JointFrame(next, this, current.Joints[jFrameBuffer.Count]);
                             if (newJframe.BUILT)
                             {
                                 jFrameBuffer.Add(newJframe);
-                                debugBin.Append(" added!:\n");
+                                DebugBinStatic.Append(" added!:\n");
                             }
                             else
-                                debugBin.Append(" failed!:\n");
+                                DebugBinStatic.Append(" failed!:\n");
                             break;
 
                         case KframeTag:
-                            debugBin.Append("kFrame:");
+                            DebugBinStatic.Append("kFrame:");
                             KeyFrame newKframe = new KeyFrame(next, this, jFrameBuffer);
                             if (newKframe.BUILT)
                             {
                                 kFrameBuffer.Add(newKframe);
                                 jFrameBuffer.Clear();
-                                debugBin.Append(" added!:\n");
+                                DebugBinStatic.Append(" added!:\n");
                             }
                             else
-                                debugBin.Append(" failed!:\n");
+                                DebugBinStatic.Append(" failed!:\n");
                             break;
 
                         case SeqTag:
-                            debugBin.Append("sequence:\n");
+                            DebugBinStatic.Append("sequence:\n");
                             Sequence newSeq = new Sequence(next, this, current, kFrameBuffer);
                             if (newSeq.BUILT)
                             {
                                 sequenceBuffer.Add(newSeq);
                                 kFrameBuffer.Clear();
-                                debugBin.Append(" added!:\n");
+                                DebugBinStatic.Append(" added!:\n");
                             }
                             else
-                                debugBin.Append(" failed!:\n");
+                                DebugBinStatic.Append(" failed!:\n");
                             break;
 
                         default:
@@ -3335,14 +3474,14 @@ namespace IngameScript
                 }
                 catch
                 {
-                    debugBin.Append("Fail Point!\n");
+                    DebugBinStatic.Append("Fail Point!\n");
                     JsetBin.Clear();
-                    return false;
+                    return -1;
                 }
                 debugCounter++;
             }
 
-            return true;
+            return 1;
         }
         void Startup()
         {
