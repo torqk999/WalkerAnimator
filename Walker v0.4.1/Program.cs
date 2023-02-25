@@ -60,7 +60,93 @@ namespace IngameScript
         public void Main(string argument, UpdateType updateSource)
         {
             foo();
-        }*/
+        }
+     
+     */
+
+
+    /*int loadCounter = 0;
+
+            for(int set = SaveObjectIndex[(int)eRoot.JSET]; set <= JsetBin.Count; set++)
+            {
+                if (CheckCallLimit())
+                    return 0;
+
+                for (int foot = SaveObjectIndex[(int)eRoot.FOOT]; set <= JsetBin[set].Feet.Count; foot++)
+                {
+                    SaveObjectIndex[(int)eRoot.FOOT] = foot;
+                    if (CheckCallLimit())
+                        return 0;
+
+                    for (int toe = SaveObjectIndex[(int)eRoot.TOE]; toe < JsetBin[set].GetFoot(foot).Toes.Count; toe++)
+                    {
+                        SaveObjectIndex[(int)eRoot.TOE] = toe;
+                        if (CheckCallLimit())
+                            return 0;
+
+                        JsetBin[set].GetFoot(foot).Toes[toe].Save();
+                    }
+                    SaveObjectIndex[(int)eRoot.TOE]++;
+
+                    for (int mag = SaveObjectIndex[(int)eRoot.MAGNET]; mag < JsetBin[set].GetFoot(foot).Magnets.Count; mag++)
+                    {
+                        SaveObjectIndex[(int)eRoot.MAGNET] = mag;
+                        if (CheckCallLimit())
+                            return 0;
+
+                        JsetBin[set].GetFoot(foot).Magnets[mag].Save();
+                    }
+                    SaveObjectIndex[(int)eRoot.MAGNET]++;
+
+                    SaveData.Append($"{JsetBin[set].Feet[foot].SaveData()}\n");
+                }
+                SaveObjectIndex[(int)eRoot.FOOT]++;
+
+                for (int joint = SaveObjectIndex[(int)eRoot.JOINT]; set < JsetBin[set].Joints.Count; set++)
+                {
+                    SaveObjectIndex[(int)eRoot.JOINT] = joint;
+                    if (CheckCallLimit())
+                        return 0;
+
+                    JsetBin[set].Joints[joint].Save();
+                }
+                SaveObjectIndex[(int)eRoot.JOINT]++;
+
+                if (!SetSaved)
+                {
+                    SaveData.Append(JsetBin[set].SaveData());
+                    SetSaved = true;
+                }
+
+                for(int seq = SaveObjectIndex[(int)eRoot.SEQUENCE]; seq < JsetBin[set].Sequences.Count; seq++)
+                {
+                    SaveObjectIndex[(int)eRoot.SEQUENCE] = seq;
+                    if (CheckCallLimit())
+                        return 0;
+
+                    foreach (KeyFrame frame in seq.Frames)
+                    {
+                        foreach (JointFrame jFrame in frame.Jframes)
+                        {
+                            SaveData.Append(jFrame.SaveData());
+                        }
+                        SaveData.Append($"{frame.SaveData()}\n");
+                    }
+
+                    SaveData.Append(JsetBin[set].Sequences[seq].SaveData());
+                }
+                SaveObjectIndex[(int)eRoot.SEQUENCE]++;
+
+                for (int i = 0; i < SaveObjectIndex.Length; i++)
+                    SaveObjectIndex[i] = 0;
+
+                for (int i = 0; i < SaveFootIndex.Length; i++)
+                    SaveFootIndex[i] = 0;
+
+                
+                SaveData.Append($"{JointSetTag}:{set.Name}:LOAD FINISHED\n");
+            }*/
+
 
     //SHA256:Gjr4HXe4MUH4BlceqwS7uN4QFotJRKzGo0VdsjjcQm4 clark_thomson2001@yahoo.com
     #region TODO
@@ -148,6 +234,7 @@ namespace IngameScript
         #region MAIN
 
         #region CONSTS
+        UpdateFrequency PROG_FREQ = UpdateFrequency.None; 
         const string LCDgroupName = "LCDS";
         const string FlightGroupName = "FLIGHT";
         const string FootSignature = "[FOOT]";
@@ -202,8 +289,7 @@ namespace IngameScript
         const float RollScalar = 0.05f;
 
         const int ReleaseCount = 50;
-        const int LoadLineCap = 20;
-        const int LoadJointCap = 20;
+        const int DataTransferCap = 20;
 
         const double RAD2DEG = 180 / Math.PI;
         const double SAFETY = Math.PI / 4;
@@ -214,17 +300,19 @@ namespace IngameScript
         IMyCockpit Control;
 
         List<IMyFunctionalBlock> FlightGroup = new List<IMyFunctionalBlock>();
-        List<JointSet> JsetBin = new List<JointSet>();
+        List<Root> JsetBin = new List<Root>();
         List<Sequence> Animations = new List<Sequence>();
 
         Sequence CurrentWalk;
         JointSet CurrentWalkSet;
+        RootSort SORT = new RootSort();
+
         JointSet SetBuffer;
         List<IMyTerminalBlock> BlockBuffer;
-        List<Foot> FeetBuffer;
-        string SetDataBuffer;
-        int SetBufferIndex;
-        RootSort SORT = new RootSort();
+        List<Foot> FeetBuffer = new List<Foot>();
+        List<JointFrame> jFrameBuffer = new List<JointFrame>();
+        List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
+        List<Sequence> sequenceBuffer = new List<Sequence>();
 
         #endregion
 
@@ -234,12 +322,20 @@ namespace IngameScript
         GUILayer CurrentGUILayer = GUILayer.JSET;
         //GUILayer JsetGUILayer = GUILayer.SEQUENCE;
 
+        string SetDataBuffer;
+        int LoadJointIndex;
+        int LoadCustomDataIndex;
+        int TransferCount = 0;
         int CursorIndex = 0;
         int CurrentSetting = 0;
         int LineBufferSize = 6;
-        int[] SelObjIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
+        int[] SaveObjectIndex = new int[Enum.GetNames(typeof(eRoot)).Length];
+        int[] SelectedObjectIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
 
+        bool SavingData = false;
         bool LoadingData = true;
+        bool DataInit = false;
+        bool SetSaved = false;
         bool BuildingJoints = false;
         bool CapLines = true;
         bool Snapping = true;
@@ -254,6 +350,7 @@ namespace IngameScript
             IGNORE_SAVE,
             IGNORE_FEET,
             AUTO_DEMO,
+            //AUTO_SAVE,
             STATOR_TARGET,
             STATOR_CONTROL
         }
@@ -488,14 +585,23 @@ namespace IngameScript
             CONTROL,
             OPTIONS
         }
+        public enum eRoot
+        {
+            JSET,
+            FOOT,
+            TOE,
+            MAGNET,
+            JOINT,
+            SEQUENCE,
+            K_FRAME,
+            J_FRAME
+        }
         public enum GUILayer
         {
             JSET = 0,
-            FOOT = 1,
-            SUB_FOOT = 2,
             SEQUENCE = 1,
-            FRAME = 2,
-            JOINT = 3
+            K_FRAME = 2,
+            J_FRAME = 3
         }
         public enum GUINav
         {
@@ -1041,57 +1147,15 @@ namespace IngameScript
                 //Stator.SetValueFloat("Velocity", (float)StatorVelocity);
             }
         }
-        class JointFrame : Root
-        {
-            public Joint Joint;
-            public double LerpPoint;
-
-            public JointFrame(RootData root, Joint joint, bool snapping = true) : base(root) // Snapshot
-            {
-                TAG = JframeTag;
-                Joint = joint;
-                double point = Joint.ReturnCurrentStatorPosition();
-                if (snapping)
-                {
-                    point = (int)point;
-                }
-                LerpPoint = point;
-            }
-            public JointFrame(string input, Program program, Joint joint) : base(input, program)
-            {
-                StaticDlog("Jframe Constructor:");
-                Joint = joint;
-            }
-            public void ChangeStatorLerpPoint(double value)
-            {
-                LerpPoint = Joint.ClampTargetValue(value);
-            }
-            public override bool Load(string[] data)
-            {
-                if (!base.Load(data))
-                    return false;
-
-                try
-                {
-                    LerpPoint = double.Parse(data[4]);
-                    return true;
-                }
-                catch { return false; }
-            }
-
-            public override string SaveData()
-            {
-                return $"{base.SaveData()}:{LerpPoint}\n";
-            }
-        }
+        
         class JointSet : Root
         {
             public string GroupName;
 
             public IMyTerminalBlock Plane;
-            public List<Foot> Feet = new List<Foot>();
-            public List<Joint> Joints = new List<Joint>();
-            public List<Sequence> Sequences = new List<Sequence>();
+            public List<Root> Feet = new List<Root>();
+            public List<Root> Joints = new List<Root>();
+            public List<Root> Sequences = new List<Root>();
 
             public MatrixD TargetPlane;
             public MatrixD TurnPlane;
@@ -1115,6 +1179,24 @@ namespace IngameScript
                 Plane = plane;
             }
 
+            public Foot GetFoot(int index)
+            {
+                if (index < 0 || index >= Feet.Count)
+                    return null;
+                return (Foot)Feet[index];
+            }
+            public Joint GetJoint(int index)
+            {
+                if (index < 0 || index >= Joints.Count)
+                    return null;
+                return (Joint)Joints[index];
+            }
+            public Sequence GetSequence(int index)
+            {
+                if (index < 0 || index >= Sequences.Count)
+                    return null;
+                return (Sequence)Sequences[index];
+            }
             public override void Insert(int index, Root root)
             {
                 if (root is Sequence)
@@ -1186,12 +1268,12 @@ namespace IngameScript
             }
             public bool TouchDown()
             {
-                if (Feet[0].CheckTouching())
+                if (GetFoot(0).CheckTouching())
                 {
                     InitializeGrip();
                     return true;
                 }
-                if (Feet[1].CheckTouching())
+                if (GetFoot(1).CheckTouching())
                 {
                     InitializeGrip(false);
                     return true;
@@ -1215,10 +1297,10 @@ namespace IngameScript
                 bool footCheck = false;
 
                 // determine currently locked and checking foot
-                if (Feet[Stepping].CheckTouching())
-                    Feet[Stepping].ToggleLock();
+                if (GetFoot(Stepping).CheckTouching())
+                    GetFoot(Stepping).ToggleLock();
 
-                if (Feet[Stepping].CheckLocked())
+                if (GetFoot(Stepping).CheckLocked())
                     footCheck = true;
 
                 if (footCheck) // Initial contact
@@ -1232,7 +1314,7 @@ namespace IngameScript
 
                     if (Releasing != -1)
                     {
-                        Feet[Releasing].ToggleLock(false);
+                        GetFoot(Releasing).ToggleLock(false);
                         Releasing = Releasing + 1 >= Feet.Count ? 0 : Releasing + 1;
                     }
 
@@ -1245,14 +1327,14 @@ namespace IngameScript
                 foreach (Foot foot in Feet)
                     foot.GearInit();
 
-                if (Feet[0].CheckTouching() ||
-                    Feet[0].CheckLocked())
+                if (GetFoot(0).CheckTouching() ||
+                    GetFoot(0).CheckLocked())
                 {
                     InitializeGrip();
                     return true;
                 }
-                if (Feet[1].CheckTouching() ||
-                    Feet[1].CheckLocked())
+                if (GetFoot(1).CheckTouching() ||
+                    GetFoot(1).CheckLocked())
                 {
                     InitializeGrip(false);
                     return true;
@@ -1266,9 +1348,9 @@ namespace IngameScript
                     int unlock = left ? 1 : 0;
                     int locking = left ? 0 : 1;
 
-                    Feet[locking].ToggleLock();
+                    GetFoot(locking).ToggleLock();
                     Releasing = locking;
-                    Feet[unlock].ToggleLock(false);
+                    GetFoot(unlock).ToggleLock(false);
                     Stepping = unlock;
 
                     string side = left ? "Left" : "Right";
@@ -1346,18 +1428,18 @@ namespace IngameScript
                             {
                                 if (safety)
                                 {
-                                    foot.Planars[i].PlaneCorrection = 0;
+                                    foot.GetPlanar(i).PlaneCorrection = 0;
                                     continue;
                                 }
 
                                 if (foot.Planars[i].TAG == TurnTag && !foot.Locked)
                                 {
-                                    foot.Planars[i].PlaneCorrection = GeneratePlaneCorrection(foot.Planars[i], foot.PlanarRatio, TurnBuffer);
+                                    foot.GetPlanar(i).PlaneCorrection = GeneratePlaneCorrection(foot.GetPlanar(i), foot.PlanarRatio, TurnBuffer);
                                 }
 
                                 else
                                 {
-                                    foot.Planars[i].PlaneCorrection = GeneratePlaneCorrection(foot.Planars[i], foot.PlanarRatio, -PlaneBuffer);
+                                    foot.GetPlanar(i).PlaneCorrection = GeneratePlaneCorrection(foot.GetPlanar(i), foot.PlanarRatio, -PlaneBuffer);
                                 }
                             }
                     }
@@ -1453,9 +1535,9 @@ namespace IngameScript
         }
         class Foot : Root
         {
-            public List<Joint> Toes = new List<Joint>();
-            public List<Joint> Planars = new List<Joint>();
-            public List<Magnet> Magnets = new List<Magnet>();
+            public List<Root> Toes = new List<Root>();
+            public List<Root> Planars = new List<Root>();
+            public List<Root> Magnets = new List<Root>();
 
             public bool Locked = false;
             public bool Planeing;
@@ -1471,7 +1553,24 @@ namespace IngameScript
                 StaticDlog("Foot Constructor:");
             }
 
-
+            public Joint GetToe(int index)
+            {
+                if (index < 0 || index >= Toes.Count)
+                    return null;
+                return (Joint)Toes[index];
+            }
+            public Joint GetPlanar(int index)
+            {
+                if (index < 0 || index >= Planars.Count)
+                    return null;
+                return (Joint)Planars[index];
+            }
+            public Magnet GetMagnet(int index)
+            {
+                if (index < 0 || index >= Magnets.Count)
+                    return null;
+                return (Magnet)Magnets[index];
+            }
             public void GearInit()
             {
                 foreach (Magnet magnet in Magnets)
@@ -1528,10 +1627,10 @@ namespace IngameScript
                     if (Planars[i] == null)
                         continue;
 
-                    Planars[i].UpdatePlanarDot(plane);
+                    GetPlanar(i).UpdatePlanarDot(plane);
                     for (int j = 0; j < 3; j++)
                     {
-                        PlanarRatio.SetDim(j, PlanarRatio.GetDim(j) + Math.Abs(Planars[i].PlanarDots.GetDim(j)));
+                        PlanarRatio.SetDim(j, PlanarRatio.GetDim(j) + Math.Abs(GetPlanar(i).PlanarDots.GetDim(j)));
                     }
                 }
 
@@ -1539,11 +1638,59 @@ namespace IngameScript
                     PlanarRatio.SetDim(i, 1 / PlanarRatio.GetDim(i));
             }
         }
+        class JointFrame : Root
+        {
+            public Joint Joint;
+            public double LerpPoint;
+
+            public JointFrame(RootData root, Joint joint, bool snapping = true) : base(root) // Snapshot
+            {
+                TAG = JframeTag;
+                Joint = joint;
+                double point = Joint.ReturnCurrentStatorPosition();
+                if (snapping)
+                {
+                    point = (int)point;
+                }
+                LerpPoint = point;
+            }
+            public JointFrame(string input, Program program, Joint joint) : base(input, program)
+            {
+                StaticDlog("Jframe Constructor:");
+                Joint = joint;
+            }
+            public void ChangeStatorLerpPoint(double value)
+            {
+                LerpPoint = Joint.ClampTargetValue(value);
+            }
+            public override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try
+                {
+                    LerpPoint = double.Parse(data[4]);
+                    return true;
+                }
+                catch { return false; }
+            }
+
+            public override string SaveData()
+            {
+                return $"{base.SaveData()}:{LerpPoint}\n";
+            }
+        }
         class KeyFrame : Root
         {
-            public List<JointFrame> Jframes = new List<JointFrame>();
-
-            public KeyFrame(RootData root, List<JointFrame> jFrames = null) : base(root)
+            public List<Root> Jframes = new List<Root>();
+            public JointFrame GetJointFrame(int index)
+            {
+                if (index < 0 || index >= Jframes.Count)
+                    return null;
+                return (JointFrame)Jframes[index];
+            }
+            public KeyFrame(RootData root, List<Root> jFrames = null) : base(root)
             {
                 TAG = KframeTag;
                 if (jFrames != null)
@@ -1562,7 +1709,7 @@ namespace IngameScript
         class Sequence : Root
         {
             /// EXTERNALS ///
-            public List<KeyFrame> Frames = new List<KeyFrame>();
+            public List<Root> Frames = new List<Root>();
             public JointSet JointSet;
             public Setting ClockSpeed;
             public KeyFrame CurrentFrame;
@@ -1586,6 +1733,12 @@ namespace IngameScript
                 Frames.AddRange(buffer);
             }
 
+            public KeyFrame GetKeyFrame(int index)
+            {
+                if (index < 0 || index >= Frames.Count)
+                    return null;
+                return (KeyFrame)Frames[index];
+            }
             public override void Insert(int index, Root root)
             {
                 if (root is KeyFrame)
@@ -1656,7 +1809,7 @@ namespace IngameScript
                 if (Frames.Count == 0)
                     return false;
 
-                CurrentFrame = Frames[0];
+                CurrentFrame = GetKeyFrame(0);
 
                 foreach (JointFrame jFrame in CurrentFrame.Jframes)
                 {
@@ -1675,7 +1828,7 @@ namespace IngameScript
 
                 StaticDlog($"Good Index");
 
-                foreach (JointFrame jFrame in Frames[index].Jframes)
+                foreach (JointFrame jFrame in GetKeyFrame(index).Jframes)
                 {
                     StaticDlog($"Joint: {jFrame.Joint != null}");
                     jFrame.Joint.OverwriteAnimTarget(jFrame.LerpPoint);
@@ -1708,7 +1861,7 @@ namespace IngameScript
                 for (int i = 0; i < JointSet.Joints.Count; i++)
                 {
                     RootData jfRoot = newKFrame.Parent(JointSet.Joints[i].Name, i);
-                    newKFrame.Jframes.Add(new JointFrame(jfRoot, JointSet.Joints[i], snapping));
+                    newKFrame.Jframes.Add(new JointFrame(jfRoot, JointSet.GetJoint(i), snapping));
                 }
 
                 Insert(index, newKFrame);
@@ -1790,7 +1943,7 @@ namespace IngameScript
                     Frames.Count == 0)
                     return;
 
-                CurrentFrame = Frames[index];
+                CurrentFrame = GetKeyFrame(index);
                 CurrentClockTime = forward ? 0 : 1;
 
                 foreach (JointFrame jFrame in CurrentFrame.Jframes)
@@ -1834,6 +1987,7 @@ namespace IngameScript
         }
         JointSet LoadJointSet(string input, IMyTerminalBlock plane, List<Foot> footBuffer)
         {
+            Echo("Load joint set");
             JointSet newSet = new JointSet(input, this, plane);
             if (!newSet.BUILT)
                 return null;
@@ -1862,6 +2016,7 @@ namespace IngameScript
             }
 
             newSet.Sort();*/
+            Echo("Loaded");
             return newSet;
         }
 
@@ -1883,13 +2038,12 @@ namespace IngameScript
                 return true;
             }
 
-            for (int i = SetBufferIndex; i < BlockBuffer.Count ; i++)
+            for (int i = LoadJointIndex; i < BlockBuffer.Count ; i++)
             {
-                if (i >= SetBufferIndex + LoadJointCap)
-                {
-                    SetBufferIndex = i;
+                Echo($"Buffering:{i}");
+                LoadJointIndex = i;
+                if (CheckCallLimit())
                     return false;
-                }
 
                 if (BlockBuffer[i] is IMyLandingGear)
                 {
@@ -2025,7 +2179,7 @@ namespace IngameScript
             if (!newMagnet.BUILT)
                 return;
 
-            Foot foot = newMagnet.FootIndex < 0 || newMagnet.FootIndex >= set.Feet.Count ? null : set.Feet[newMagnet.FootIndex];
+            Foot foot = newMagnet.FootIndex < 0 || newMagnet.FootIndex >= set.Feet.Count ? null : set.GetFoot(newMagnet.FootIndex);
             if (foot == null)
                 return;
 
@@ -2036,7 +2190,7 @@ namespace IngameScript
             if (gear == null)
                 return;
 
-            Foot foot = footIndex < 0 || footIndex >= set.Feet.Count ? null : set.Feet[footIndex];
+            Foot foot = footIndex < 0 || footIndex >= set.Feet.Count ? null : set.GetFoot(footIndex);
             if (foot == null)
                 return;
 
@@ -2053,7 +2207,7 @@ namespace IngameScript
             if (!newJoint.BUILT)
                 return;
 
-            Foot foot = newJoint.FootIndex < 0 || newJoint.FootIndex >= set.Feet.Count ? null : set.Feet[newJoint.FootIndex];
+            Foot foot = newJoint.FootIndex < 0 || newJoint.FootIndex >= set.Feet.Count ? null : set.GetFoot(newJoint.FootIndex);
 
             AppendJoint(set, foot, newJoint);
         }
@@ -2062,7 +2216,7 @@ namespace IngameScript
             if (jointBlock == null)
                 return;
 
-            Foot foot = data.FootIndex < 0 || data.FootIndex >= set.Feet.Count ? null : set.Feet[data.FootIndex];
+            Foot foot = data.FootIndex < 0 || data.FootIndex >= set.Feet.Count ? null : set.GetFoot(data.FootIndex);
             Joint newJoint = JointBuilder(jointBlock, data);
 
             AppendJoint(set, foot, newJoint);
@@ -2122,7 +2276,7 @@ namespace IngameScript
         {
             int cursor;
             if (CurrentGUILayer == layer &&
-                SelObjIndex[(int)layer] == index)
+                SelectedObjectIndex[(int)layer] == index)
             {
                 CursorIndex = rawStrings.Count - 1;
                 cursor = 1;
@@ -2140,10 +2294,10 @@ namespace IngameScript
             DisplayManagerBuilder.Append("|" + index + ":" + itemName);
             switch (layer)
             {
-                case GUILayer.JOINT:
+                case GUILayer.J_FRAME:
                     try
                     {
-                        DisplayManagerBuilder.Append($"[{JsetBin[SelObjIndex[0]].Joints[index].TAG}]");
+                        DisplayManagerBuilder.Append($"[{GetSelectedSet().Joints[index].TAG}]");
                     }
                     catch { }
                     break;
@@ -2151,7 +2305,7 @@ namespace IngameScript
                 case GUILayer.JSET:
                     try
                     {
-                        DisplayManagerBuilder.Append($"{(JsetBin[SelObjIndex[0]] == CurrentWalkSet ? ":[LOADED]" : "")}");
+                        DisplayManagerBuilder.Append($"{(JsetBin[SelectedObjectIndex[0]] == CurrentWalkSet ? ":[LOADED]" : "")}");
                     }
                     catch { }
                     break;
@@ -2178,35 +2332,38 @@ namespace IngameScript
                 {
                     AppendLibraryItem(GUILayer.JSET, jSetIndex, stringList, JsetBin[jSetIndex].Name);
 
-                    if (layer < 1 || SelObjIndex[0] != jSetIndex)
+                    if (layer < 1 || Selected(GUILayer.JSET) != jSetIndex)
                         continue;
 
-                    if (JsetBin[jSetIndex].Sequences.Count == 0)
+                    JointSet set = GetJointSet(jSetIndex);
+                    if (set.Sequences.Count == 0)
                         stringList.Add(" No sequences found!");
 
-                    for (int seqIndex = 0; seqIndex < JsetBin[jSetIndex].Sequences.Count; seqIndex++)
+                    for (int seqIndex = 0; seqIndex < set.Sequences.Count; seqIndex++)
                     {
-                        AppendLibraryItem(GUILayer.SEQUENCE, seqIndex, stringList, JsetBin[jSetIndex].Sequences[seqIndex].Name);
+                        AppendLibraryItem(GUILayer.SEQUENCE, seqIndex, stringList, set.Sequences[seqIndex].Name);
 
-                        if (layer < 2 || SelObjIndex[1] != seqIndex)
+                        if (layer < 2 || Selected(GUILayer.SEQUENCE) != seqIndex)
                             continue;
 
-                        if (JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count == 0)
+                        Sequence seq = set.GetSequence(seqIndex);
+                        if (seq.Frames.Count == 0)
                             stringList.Add("  No frames found!");
 
-                        for (int kFrameIndex = 0; kFrameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames.Count; kFrameIndex++)
+                        for (int kFrameIndex = 0; kFrameIndex < seq.Frames.Count; kFrameIndex++)
                         {
-                            AppendLibraryItem(GUILayer.FRAME, kFrameIndex, stringList, JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Name);
+                            AppendLibraryItem(GUILayer.K_FRAME, kFrameIndex, stringList, seq.Frames[kFrameIndex].Name);
 
-                            if (layer < 3 || SelObjIndex[2] != kFrameIndex)
+                            if (layer < 3 || Selected(GUILayer.K_FRAME) != kFrameIndex)
                                 continue;
 
-                            if (JsetBin[jSetIndex].Joints.Count == 0)
+                            if (set.Joints.Count == 0)
                                 stringList.Add("   No joints found!");
 
-                            for (int jFrameIndex = 0; jFrameIndex < JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes.Count(); jFrameIndex++)
+                            for (int jFrameIndex = 0; jFrameIndex < seq.GetKeyFrame(kFrameIndex).Jframes.Count(); jFrameIndex++)
                             {
-                                AppendLibraryItem(GUILayer.JOINT, jFrameIndex, stringList, JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].Joint.Connection.CustomName/*Data.Name*/ + ':' + JsetBin[jSetIndex].Sequences[seqIndex].Frames[kFrameIndex].Jframes[jFrameIndex].LerpPoint);
+                                JointFrame jFrame = seq.GetKeyFrame(kFrameIndex).GetJointFrame(jFrameIndex);
+                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList,$"{jFrame.Joint.Connection.CustomName}:{jFrame.LerpPoint}");
                             }
                         }
                     }
@@ -2267,8 +2424,8 @@ namespace IngameScript
                 stringList.Add($"Walk-state: {CurrentWalk.CurrentClockMode}");
                 stringList.Add($"Frame index: {CurrentWalk.CurrentFrameIndex}");
                 stringList.Add($"Clock Time: {CurrentWalk.CurrentClockTime}");
-                stringList.Add($"Left foot locked: {CurrentWalkSet.Feet[0].Locked}");
-                stringList.Add($"Right foot locked: {CurrentWalkSet.Feet[1].Locked}");
+                stringList.Add($"Left foot locked: {CurrentWalkSet.GetFoot(0).Locked}");
+                stringList.Add($"Right foot locked: {CurrentWalkSet.GetFoot(1).Locked}");
             }
             catch
             {
@@ -2598,14 +2755,14 @@ namespace IngameScript
             Sequence seq = null;
             KeyFrame frame = null;
 
-            if (JsetBin.Count > SelObjIndex[0])
-                limb = JsetBin[SelObjIndex[0]];
+            if (JsetBin.Count > SelectedObjectIndex[0])
+                limb = GetSelectedSet();
 
-            if (limb != null && limb.Sequences.Count > SelObjIndex[1])
-                seq = limb.Sequences[SelObjIndex[1]];
+            if (limb != null && limb.Sequences.Count > Selected(GUILayer.SEQUENCE))
+                seq = limb.GetSequence(Selected(GUILayer.SEQUENCE));
 
-            if (seq != null && seq.Frames.Count > SelObjIndex[2])
-                frame = seq.Frames[SelObjIndex[2]];
+            if (seq != null && seq.Frames.Count > Selected(GUILayer.K_FRAME))
+                frame = seq.GetKeyFrame(Selected(GUILayer.K_FRAME));
 
             if (limb == null && CurrentGUILayer > GUILayer.JSET)
                 CurrentGUILayer = GUILayer.JSET;
@@ -2613,19 +2770,10 @@ namespace IngameScript
             else if (seq == null && CurrentGUILayer > GUILayer.SEQUENCE)
                 CurrentGUILayer = GUILayer.SEQUENCE;
 
-            else if (frame == null && CurrentGUILayer > GUILayer.FRAME)
-                CurrentGUILayer = GUILayer.FRAME;
+            else if (frame == null && CurrentGUILayer > GUILayer.K_FRAME)
+                CurrentGUILayer = GUILayer.K_FRAME;
 
-            counts[0] = limb == null ? 0 : JsetBin.Count;
-            counts[1] = limb == null ? 0 : limb.Sequences.Count;
-            counts[2] = seq == null ? 0 : seq.Frames.Count;
-            counts[3] = limb == null ? 0 : limb.Joints.Count;
-
-            int layer = (int)CurrentGUILayer;
-
-            SelObjIndex[layer] += incr;
-            SelObjIndex[layer] = counts[layer] == 0 || SelObjIndex[layer] >= counts[layer] ? 0 : SelObjIndex[layer];
-            SelObjIndex[layer] = SelObjIndex[layer] < 0 ? counts[layer] - 1 : SelObjIndex[layer];
+            AdjustSelect(CurrentGUILayer, incr, GetSelectedCount());
         }
         void GUIUpdate()
         {
@@ -2720,7 +2868,7 @@ namespace IngameScript
                 Static("Demo Selected frame!\n");
                 try
                 {
-                    JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].DemoKeyFrame(SelObjIndex[2]);
+                    GetSelectedSequence().DemoKeyFrame(Selected(GUILayer.K_FRAME));
                 }
                 catch
                 {
@@ -2730,21 +2878,21 @@ namespace IngameScript
         }
         void LoadItem()
         {
-            if (CurrentGUILayer == GUILayer.JOINT) // do nothing
+            if (CurrentGUILayer == GUILayer.J_FRAME) // do nothing
                 return;
 
-            CurrentWalkSet = JsetBin[SelObjIndex[0]];
+            CurrentWalkSet = GetSelectedSet();
 
             if (CurrentGUILayer == GUILayer.JSET)
                 return;
 
-            LoadWalk(CurrentWalkSet.Sequences[SelObjIndex[1]]);
+            LoadWalk(CurrentWalkSet.GetSequence(SelectedObjectIndex[1]));
 
             if (CurrentGUILayer == GUILayer.SEQUENCE)
                 return;
 
             if (CurrentWalk != null)
-                CurrentWalk.DemoKeyFrame(SelObjIndex[2]);
+                CurrentWalk.DemoKeyFrame(SelectedObjectIndex[2]);
         }
         void LoadWalk(Sequence walk)
         {
@@ -2766,7 +2914,7 @@ namespace IngameScript
             if (name == null)
                 return;
 
-            int index = SelObjIndex[0];
+            int index = SelectedObjectIndex[0];
             index += add ? 1 : 0;
 
             if (index >= JsetBin.Count)
@@ -2797,24 +2945,24 @@ namespace IngameScript
                 switch (CurrentGUILayer)
                 {
                     case GUILayer.JSET:
-                        JsetBin[SelObjIndex[0]].Name = name;
+                        JsetBin[SelectedObjectIndex[0]].Name = name;
                         break;
 
                     case GUILayer.SEQUENCE:
-                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Name = name;
+                        GetSelectedSequence().Name = name;
                         break;
 
-                    case GUILayer.FRAME:
-                        JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Name = name;
+                    case GUILayer.K_FRAME:
+                        GetSelectedKeyFrame().Name = name;
                         break;
 
-                    case GUILayer.JOINT:
-                        if (floatGood)
+                    case GUILayer.J_FRAME:
+                        /*if (floatGood)
                         {
-                            JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Jframes[SelObjIndex[3]].ChangeStatorLerpPoint(value);
+                            JsetBin[SelectedObjectIndex[0]].GetSequence(SelectedObjectIndex[1]).GetKeyFrame(SelectedObjectIndex[2]).GetJointFrame(SelectedObjectIndex[3]).ChangeStatorLerpPoint(value);
                         }
                         else
-                            JsetBin[SelObjIndex[0]].Joints[SelObjIndex[3]].Name = name;
+                            JsetBin[SelectedObjectIndex[0]].Joints[SelectedObjectIndex[3]].Name = name;*/
                         break;
                 }
             }
@@ -2838,8 +2986,8 @@ namespace IngameScript
 
                 case GUILayer.SEQUENCE:
 
-                    set = JsetBin[SelObjIndex[0]];
-                    index = SelObjIndex[1];
+                    set = GetSelectedSet();
+                    index = SelectedObjectIndex[1];
                     index += add ? 1 : 0;
 
                     if (name == null)
@@ -2849,11 +2997,11 @@ namespace IngameScript
                     set.Insert(index, new Sequence(seqRoot, set));
                     break;
 
-                case GUILayer.FRAME:
+                case GUILayer.K_FRAME:
 
-                    set = JsetBin[SelObjIndex[0]];
-                    seq = set.Sequences[SelObjIndex[1]];
-                    index = SelObjIndex[2];
+                    set = GetSelectedSet();
+                    seq = set.GetSequence(SelectedObjectIndex[1]);
+                    index = SelectedObjectIndex[2];
                     index += add ? 1 : 0;
 
                     if (name == null)
@@ -2871,55 +3019,55 @@ namespace IngameScript
             switch (CurrentGUILayer)
             {
                 case GUILayer.JSET:
-                    JsetBin.RemoveAt(SelObjIndex[0]);
+                    JsetBin.RemoveAt(Selected(GUILayer.JSET));
                     break;
 
                 case GUILayer.SEQUENCE:
-                    JsetBin[SelObjIndex[0]].Sequences.RemoveAt(SelObjIndex[1]);
+                    GetSelectedSet().Sequences.RemoveAt(Selected(GUILayer.SEQUENCE));
                     break;
 
-                case GUILayer.FRAME:
-                    JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].RemoveKeyFrameAtIndex(SelObjIndex[2]);
+                case GUILayer.K_FRAME:
+                    GetSelectedSequence().RemoveKeyFrameAtIndex(Selected(GUILayer.K_FRAME));
                     break;
             }
 
             int a = JsetBin.Count;
 
-            if (SelObjIndex[0] >= a && a > 0)
+            if (SelectedObjectIndex[0] >= a && a > 0)
             {
-                SelObjIndex[0] = a - 1;
+                SelectedObjectIndex[0] = a - 1;
             }
 
-            if (a == 0 || JsetBin[SelObjIndex[0]] == null)
+            if (a == 0 || JsetBin[SelectedObjectIndex[0]] == null)
             {
-                SelObjIndex[1] = 0;
-                SelObjIndex[2] = 0;
-                SelObjIndex[3] = 0;
+                SelectedObjectIndex[1] = 0;
+                SelectedObjectIndex[2] = 0;
+                SelectedObjectIndex[3] = 0;
                 return;
             }
 
-            int b = JsetBin[SelObjIndex[0]].Sequences.Count;
-            if (SelObjIndex[1] >= b && b > 0)
+            int b = GetSelectedSet().Sequences.Count;
+            if (SelectedObjectIndex[1] >= b && b > 0)
             {
-                SelObjIndex[1] = b - 1;
+                SelectedObjectIndex[1] = b - 1;
             }
 
-            if (b == 0 || JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]] == null)
+            if (b == 0 || GetSelectedSequence() == null)
             {
-                SelObjIndex[2] = 0;
-                SelObjIndex[3] = 0;
+                SelectedObjectIndex[2] = 0;
+                SelectedObjectIndex[3] = 0;
                 return;
             }
 
-            int c = JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames.Count;
-            if (SelObjIndex[2] >= c && c > 0)
+            int c = GetSelectedSequence().Frames.Count;
+            if (SelectedObjectIndex[2] >= c && c > 0)
             {
-                SelObjIndex[2] = c - 1;
+                SelectedObjectIndex[2] = c - 1;
             }
 
-            if (c == 0 || JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]] == null)
+            if (c == 0 || GetSelectedKeyFrame() == null)
             {
-                SelObjIndex[3] = 0;
+                SelectedObjectIndex[3] = 0;
                 return;
             }
         }
@@ -2932,13 +3080,26 @@ namespace IngameScript
         }
         void IncrementLerpPoint(bool incr = true)
         {
-            if (CurrentGUILayer != GUILayer.JOINT)
+            if (CurrentGUILayer != GUILayer.J_FRAME)
                 return;
 
-            JointFrame jFrame = JsetBin[SelObjIndex[0]].Sequences[SelObjIndex[1]].Frames[SelObjIndex[2]].Jframes[SelObjIndex[3]];
+            JointFrame jFrame = GetSelectedJointFrame();
 
             double newLerpPoint = incr ? jFrame.LerpPoint + SnappingValue.Current() : jFrame.LerpPoint - SnappingValue.Current();
             jFrame.ChangeStatorLerpPoint(newLerpPoint);
+        }
+
+        int Selected(GUILayer layer)
+        {
+            return SelectedObjectIndex[(int)layer];
+        }
+        void AdjustSelect(GUILayer layer, int adjust, int count)
+        {
+            SetSelect(layer, Selected(layer) + adjust, count);
+        }
+        void SetSelect(GUILayer layer, int index, int count)
+        {
+            SelectedObjectIndex[(int)layer] = index >= count ? 0 : index < 0 ? count - 1 : index;
         }
         #endregion
 
@@ -3158,7 +3319,7 @@ namespace IngameScript
                 DisplayManagerBuilder.Append($"Control: {Control != null}\n");
                 Vector3 B = CurrentWalkSet.PlaneBuffer;
                 Vector3 T = CurrentWalkSet.TurnBuffer;
-                List<Joint> P = CurrentWalkSet.Feet[1].Planars;
+                Foot F = CurrentWalkSet.GetFoot(1);
 
                 string derp = "hi";
                 derp += " there";
@@ -3166,13 +3327,13 @@ namespace IngameScript
                 DisplayManagerBuilder.Append($"RawInput:\n{Control.RotationIndicator.Y}:{Control.RotationIndicator.X}:{Control.RollIndicator}\n");
                 DisplayManagerBuilder.Append($"P_Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n");
                 DisplayManagerBuilder.Append($"T_Corrections:\n{T.X:0.###}:{T.Y:0.###}:{T.Z:0.###}\n");
-                DisplayManagerBuilder.Append($"Finals:\n{P[0].ActiveTarget:0.###}\n{P[1].ActiveTarget:0.###}\n{P[2].ActiveTarget:0.###}\n");
+                DisplayManagerBuilder.Append($"Finals:\n{F.GetPlanar(0).ActiveTarget:0.###}\n{F.GetPlanar(1).ActiveTarget:0.###}\n{F.GetPlanar(2).ActiveTarget:0.###}\n");
                 DisplayManagerBuilder.Append($"Stepping: {CurrentWalkSet.Stepping}\n");
                 DisplayManagerBuilder.Append($"Releasing: {CurrentWalkSet.Releasing}\n");
 
                 for (int i = 0; i < CurrentWalkSet.Feet.Count; i++)
                 {
-                    DisplayManagerBuilder.Append($"Foot:{i} | Locked: {CurrentWalkSet.Feet[i].Locked}\n");
+                    DisplayManagerBuilder.Append($"Foot:{i} | Locked: {CurrentWalkSet.GetFoot(i).Locked}\n");
                 }
             }
             catch
@@ -3266,7 +3427,7 @@ namespace IngameScript
                     }
                 }
 
-                Runtime.UpdateFrequency = UpdateFrequency.Update1;
+                Runtime.UpdateFrequency = PROG_FREQ;
                 Initialized = true;
             }
             catch
@@ -3296,7 +3457,8 @@ namespace IngameScript
 
             if (BuildingJoints)
             {
-
+                BuildingJoints = !LoadJoints();
+                return;
             }
 
             if (LoadingData)
@@ -3348,7 +3510,6 @@ namespace IngameScript
 
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
-
         public int Load()
         {
             JsetBin.Clear();
@@ -3357,42 +3518,44 @@ namespace IngameScript
 
             DebugBinStatic.Append($"Load Lines Length: {load.Length}\n");
 
-            List<JointFrame> jFrameBuffer = new List<JointFrame>();
-            List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
-            List<Foot> footBuffer = new List<Foot>();
-            List<Sequence> sequenceBuffer = new List<Sequence>();
-            JointSet current = null;
-            bool buildingSet = false;
-            int debugCounter = 0;
+            
+            //JointSet current = null;
+            //int debugCounter = 0;
 
-            foreach (string next in load)
+            for (int i = LoadCustomDataIndex; i < load.Length; i++)
             {
+                LoadCustomDataIndex = i;
+                if (CheckCallLimit())
+                    return 0;
+
                 try
-                {
+                {    
                     DebugBinStatic.Append("next load line...\n");
-                    string[] entry = next.Split(':');
+                    string[] entry = load[i].Split(':');
                     DebugBinStatic.Append($"op-code: {entry[0]}\n");
 
                     switch (entry[0])
                     {
+                        // OPTIONS //
                         case OptionsTag:
                             DebugBinStatic.Append("options:");
-                            LoadOptions(next);
+                            LoadOptions(load[i]);
                             DebugBinStatic.Append(" loaded!\n");
                             break;
 
                         case SettingsTag:
                             DebugBinStatic.Append("Settings:");
-                            LoadSettings(next);
+                            LoadSettings(load[i]);
                             DebugBinStatic.Append(" loaded!\n");
                             break;
 
+                        // BLOCKS //
                         case FootTag:
                             DebugBinStatic.Append("constructing foot...\n");
-                            Foot newFoot = new Foot(next, this);
+                            Foot newFoot = new Foot(load[i], this);
                             if (newFoot.BUILT)
                             {
-                                footBuffer.Add(newFoot);
+                                FeetBuffer.Add(newFoot);
                                 DebugBinStatic.Append("foot constructed!\n");
                             }
                             else
@@ -3400,39 +3563,26 @@ namespace IngameScript
                             break;
 
                         case JointSetTag:
-                            if (buildingSet)
+                            if (BuildingJoints)
                             {
                                 DebugBinStatic.Append("completing set...\n");
-                                current.Sequences.AddRange(sequenceBuffer);
+                                SetBuffer.Sequences.AddRange(sequenceBuffer);
+                                FeetBuffer.Clear();
                                 sequenceBuffer.Clear();
-                                buildingSet = false;
+                                BuildingJoints = false;
                                 break;
                             }
 
                             DebugBinStatic.Append("constructing set...\n");
 
                             BuildingJoints = true;
-
+                            SetDataBuffer = load[i];
                             return 0;
 
-                            /*current = LoadJointSet(next, Control, footBuffer);
-
-                            if (current == null)
-                            {
-                                DebugBinStatic.Append("set construction failed!\n");
-                                return false;
-                            }
-
-                            DebugBinStatic.Append($"WalkSet joint count: {current.Joints.Count}\n");
-                            JsetBin.Add(current);
-                            footBuffer.Clear();
-                            buildingSet = true;
-                            
-                            break;*/
-
+                        // SEQUENCES //
                         case JframeTag:
                             DebugBinStatic.Append("jFrame:");
-                            JointFrame newJframe = new JointFrame(next, this, current.Joints[jFrameBuffer.Count]);
+                            JointFrame newJframe = new JointFrame(load[i], this, SetBuffer.GetJoint(jFrameBuffer.Count));
                             if (newJframe.BUILT)
                             {
                                 jFrameBuffer.Add(newJframe);
@@ -3444,7 +3594,7 @@ namespace IngameScript
 
                         case KframeTag:
                             DebugBinStatic.Append("kFrame:");
-                            KeyFrame newKframe = new KeyFrame(next, this, jFrameBuffer);
+                            KeyFrame newKframe = new KeyFrame(load[i], this, jFrameBuffer);
                             if (newKframe.BUILT)
                             {
                                 kFrameBuffer.Add(newKframe);
@@ -3457,7 +3607,7 @@ namespace IngameScript
 
                         case SeqTag:
                             DebugBinStatic.Append("sequence:\n");
-                            Sequence newSeq = new Sequence(next, this, current, kFrameBuffer);
+                            Sequence newSeq = new Sequence(load[i], this, SetBuffer, kFrameBuffer);
                             if (newSeq.BUILT)
                             {
                                 sequenceBuffer.Add(newSeq);
@@ -3478,9 +3628,9 @@ namespace IngameScript
                     JsetBin.Clear();
                     return -1;
                 }
-                debugCounter++;
             }
 
+            Startup();
             return 1;
         }
         void Startup()
@@ -3489,7 +3639,7 @@ namespace IngameScript
                 JsetBin[0] == null)
                 return;
 
-            CurrentWalkSet = JsetBin[0];
+            CurrentWalkSet = GetJointSet(0);
             Planeing = CurrentWalkSet.InitFootStatus();
             CurrentWalkSet.TogglePlaneing(Planeing);
 
@@ -3497,54 +3647,278 @@ namespace IngameScript
                 CurrentWalkSet.Sequences.Count < 1)
                 return;
 
-            LoadWalk(CurrentWalkSet.Sequences[0]);
+            LoadWalk(CurrentWalkSet.GetSequence(0));
         }
+        bool CheckCallLimit()
+        {
+            TransferCount++;
+            TransferCount = TransferCount < DataTransferCap ? TransferCount : 0;
+            return TransferCount == 0;
+        }
+
+        #endregion
+        #region SAVING
+        delegate int SaveJob();
+
+        int DataSave()
+        {
+            if (!DataInit)
+                SaveInit();
+
+            return SaveStack(SaveSet, eRoot.JSET, JsetBin);
+        }
+        int SaveStack(SaveJob job, eRoot element, List<Root> roots)
+        {
+            if (Saving(element) >= roots.Count)
+                return 1;
+
+            for (int index = Saving(element); index < roots.Count; index++)
+            {
+                SetSave(element, index);
+                if (CheckCallLimit())
+                    return 0;
+
+                int result = job();
+                if (result != 1)
+                    return result;
+            }
+
+            SaveObjectIndex[(int)element]++;
+            return 1;
+        }
+        int SaveSet()
+        {
+            JointSet set = GetSavingSet();
+            if (set == null)
+                return -1;
+
+            int footResult = SaveStack(SaveFoot, eRoot.FOOT, set.Feet);
+            if (footResult != 1)
+                return footResult;
+
+            int jointResult = SaveStack(SaveJoint, eRoot.JOINT, set.Joints);
+            if (jointResult != 1)
+                return jointResult;
+
+            if (!SetSaved)
+            {
+                SaveData.Append(set.SaveData());
+                SetSaved = true;
+            }
+
+            int seqResult = SaveStack(SaveSet, eRoot.SEQUENCE, set.Sequences);
+            if (seqResult != 1)
+                return seqResult;
+
+            SaveData.Append($"{JointSetTag}:{set.Name}:LOAD FINISHED\n");
+            return 1;
+        }
+        int SaveFoot()
+        {
+            Foot foot = GetSavingFoot();
+            if (foot == null)
+                return -1;
+
+            int toeResult = SaveStack(SaveToe, eRoot.TOE, foot.Toes);
+            if (toeResult != 1)
+                return toeResult;
+
+            int magResult = SaveStack(SaveMag, eRoot.MAGNET, foot.Magnets);
+            if (magResult != 1)
+                return magResult;
+
+            SaveData.Append($"{foot.SaveData()}\n");
+            return 1;
+        }
+        int SaveJoint()
+        {
+            return GetSavingJoint().Save() ? 1 : -1;
+        }
+        int SaveToe()
+        {
+            return GetSavingToe().Save() ? 1 : -1;
+        }
+        int SaveMag()
+        {
+            return GetSavingMagnet().Save() ? 1 : -1;
+        }
+        int SaveSequence()
+        {
+            Sequence seq = GetSavingSequence();
+            if (seq == null)
+                return -1;
+
+            int frameResult = SaveStack(SaveKeyFrame, eRoot.K_FRAME, seq.Frames);
+            if (frameResult != 1)
+                return frameResult;
+
+            SaveData.Append(seq.SaveData());
+            return 1;
+        }
+        int SaveKeyFrame()
+        {
+            KeyFrame frame = GetSavingKeyFrame();
+            if (frame == null)
+                return -1;
+
+            int frameResult = SaveStack(SaveJointFrame, eRoot.J_FRAME, frame.Jframes);
+            if (frameResult != 1)
+                return frameResult;
+
+            SaveData.Append(frame.SaveData());
+            return 1;
+        }
+        int SaveJointFrame()
+        {
+            JointFrame frame = GetSavingJointFrame();
+            if (frame == null)
+                return -1;
+
+            SaveData.Append(frame.SaveData());
+            return 1;
+        }
+        int Saving(eRoot root)
+        {
+            return SaveObjectIndex[(int)root];
+        }
+
         public void Save()
         {
             if (Check(Option.IGNORE_SAVE) && !ForceSave)
                 return;
 
+            Me.CustomData = SaveData.ToString();
+        }
+        void SaveInit()
+        {
             SaveData.Clear();
 
             SaveData.Append($"{SaveOptions()}\n");
             SaveData.Append($"{SaveSettings()}\n");
 
-            foreach (JointSet set in JsetBin)
-            {
-                foreach (Foot foot in set.Feet)
-                {
-                    SaveData.Append($"{foot.SaveData()}\n");
-
-                    foreach (Joint toeGrip in foot.Toes)
-                        toeGrip.Save();
-
-                    foreach (Magnet magnet in foot.Magnets)
-                        magnet.Save();
-                }
-
-                foreach (Joint joint in set.Joints)
-                    joint.Save();
-
-                SaveData.Append(set.SaveData());
-
-                foreach (Sequence seq in set.Sequences)
-                {
-                    foreach (KeyFrame frame in seq.Frames)
-                    {
-                        foreach (JointFrame jFrame in frame.Jframes)
-                        {
-                            SaveData.Append(jFrame.SaveData());
-                        }
-                        SaveData.Append($"{frame.SaveData()}\n");
-                    }
-                    SaveData.Append(seq.SaveData());
-                }
-
-                SaveData.Append($"{JointSetTag}:{set.Name}:LOAD FINISHED\n");
-            }
-            Me.CustomData = SaveData.ToString();
+            DataInit = true;
         }
+        void IncrSave(eRoot root)
+        {
+            SaveObjectIndex[(int)root]++;
+        }
+        void SetSave(eRoot root, int index)
+        {
+            SaveObjectIndex[(int)root] = index;
+        }
+        #endregion
 
+        #region GETTERS
+        JointSet GetJointSet(int index)
+        {
+            if (index < 0 || index > JsetBin.Count)
+                return null;
+            return (JointSet)JsetBin[index];
+        }
+        JointSet GetSavingSet()
+        {
+            return GetJointSet(Saving(eRoot.JSET));
+        }
+        JointSet GetSelectedSet()
+        {
+            return GetJointSet(Selected(GUILayer.JSET));
+        }
+        Sequence GetSavingSequence()
+        {
+            JointSet set = GetSavingSet();
+            if (set == null)
+                return null;
+            return set.GetSequence(Saving(eRoot.JOINT));
+        }
+        Sequence GetSelectedSequence()
+        {
+            JointSet set = GetSelectedSet();
+            if (set == null)
+                return null;
+            return set.GetSequence(Selected(GUILayer.SEQUENCE));
+        }
+        KeyFrame GetSavingKeyFrame()
+        {
+            Sequence seq = GetSavingSequence();
+            if (seq == null)
+                return null;
+            return seq.GetKeyFrame(Saving(eRoot.K_FRAME));
+        }
+        KeyFrame GetSelectedKeyFrame()
+        {
+            Sequence seq = GetSelectedSequence();
+            if (seq == null)
+                return null;
+            return seq.GetKeyFrame(Selected(GUILayer.K_FRAME));
+        }
+        JointFrame GetSavingJointFrame()
+        {
+            KeyFrame frame = GetSavingKeyFrame();
+            if (frame == null)
+                return null;
+            return frame.GetJointFrame(Saving(eRoot.J_FRAME));
+        }
+        JointFrame GetSelectedJointFrame()
+        {
+            KeyFrame frame = GetSelectedKeyFrame();
+            if (frame == null)
+                return null;
+            return frame.GetJointFrame(Selected(GUILayer.J_FRAME));
+        }
+        Foot GetSavingFoot()
+        {
+            JointSet set = GetSavingSet();
+            if (set == null)
+                return null;
+            return set.GetFoot(Saving(eRoot.FOOT));
+        }
+        Joint GetSavingJoint()
+        {
+            JointSet set = GetSavingSet();
+            if (set == null)
+                return null;
+            return set.GetJoint(Saving(eRoot.JOINT));
+        }
+        Joint GetSavingToe()
+        {
+            Foot foot = GetSavingFoot();
+            if (foot == null)
+                return null;
+            return foot.GetToe(Saving(eRoot.TOE));
+        }
+        Magnet GetSavingMagnet()
+        {
+            Foot foot = GetSavingFoot();
+            if (foot == null)
+                return null;
+            return foot.GetMagnet(Saving(eRoot.MAGNET));
+        }
+        int GetSelectedCount()
+        {
+            switch (CurrentGUILayer)
+            {
+                case GUILayer.JSET:
+                    return JsetBin.Count;
+
+                case GUILayer.SEQUENCE:
+                    if (GetSelectedSet() == null)
+                        return 0;
+                    return GetSelectedSet().Sequences.Count;
+
+                case GUILayer.K_FRAME:
+                    if (GetSelectedSequence() == null)
+                        return 0;
+                    return GetSelectedSequence().Frames.Count;
+
+                case GUILayer.J_FRAME:
+                    if (GetSelectedKeyFrame() == null)
+                        return 0;
+                    return GetSelectedKeyFrame().Jframes.Count;
+
+                default:
+                    return 0;
+            }
+        }
         #endregion
 
         #endregion
