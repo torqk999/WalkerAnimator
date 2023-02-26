@@ -3208,7 +3208,6 @@ namespace IngameScript
 
             foreach (Sequence seq in Animations)
                 seq.UpdateSequence();
-
         }
         void PrimarySetManager()
         {
@@ -3509,6 +3508,13 @@ namespace IngameScript
 
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
+        public void Save()
+        {
+            if (Check(Option.IGNORE_SAVE) && !ForceSave)
+                return;
+
+            Me.CustomData = SaveData.ToString();
+        }
         public int Load()
         {
             JsetBin.Clear();
@@ -3660,7 +3666,12 @@ namespace IngameScript
             if (!DataInit)
                 SaveInit();
 
-            return SaveStack(SaveSet, eRoot.JSET, JsetBin);
+            int setsResult = SaveStack(SaveSet, eRoot.JSET, JsetBin);
+            if (setsResult != 1)
+                return setsResult;
+
+            ResetSave(eRoot.JSET);
+            return 1;
         }
         int SaveStack(SaveJob job, eRoot element, List<Root> roots)
         {
@@ -3687,13 +3698,13 @@ namespace IngameScript
             if (set == null)
                 return -1;
 
-            int footResult = SaveStack(SaveFoot, eRoot.FOOT, set.Feet);
-            if (footResult != 1)
-                return footResult;
+            int feetResult = SaveStack(SaveFoot, eRoot.FOOT, set.Feet);
+            if (feetResult != 1)
+                return feetResult;
 
-            int jointResult = SaveStack(SaveJoint, eRoot.JOINT, set.Joints);
-            if (jointResult != 1)
-                return jointResult;
+            int jointsResult = SaveStack(SaveJoint, eRoot.JOINT, set.Joints);
+            if (jointsResult != 1)
+                return jointsResult;
 
             if (!SetSaved)
             {
@@ -3787,13 +3798,6 @@ namespace IngameScript
             return SaveObjectIndex[(int)root];
         }
 
-        public void Save()
-        {
-            if (Check(Option.IGNORE_SAVE) && !ForceSave)
-                return;
-
-            Me.CustomData = SaveData.ToString();
-        }
         void SaveInit()
         {
             SaveData.Clear();
