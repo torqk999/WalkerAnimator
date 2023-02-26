@@ -1985,7 +1985,7 @@ namespace IngameScript
             if (cockpits.Count > 0)
                 Control = cockpits[0];
         }
-        JointSet LoadJointSet(string input, IMyTerminalBlock plane, List<Foot> footBuffer)
+        JointSet LoadSetBlockGroup(string input, IMyTerminalBlock plane, List<Foot> footBuffer)
         {
             Echo("Load joint set");
             JointSet newSet = new JointSet(input, this, plane);
@@ -2001,21 +2001,6 @@ namespace IngameScript
 
             newSet.Feet.AddRange(footBuffer);
 
-            /*foreach (IMyTerminalBlock block in blocks)
-            {
-                if (block is IMyLandingGear)
-                {
-                    LoadMagnet(newSet, (IMyLandingGear)block);
-                }
-
-                if (block is IMyPistonBase ||
-                    block is IMyMotorStator)
-                {
-                    LoadJoint(newSet, (IMyMechanicalConnectionBlock)block);
-                }
-            }
-
-            newSet.Sort();*/
             Echo("Loaded");
             return newSet;
         }
@@ -2023,19 +2008,21 @@ namespace IngameScript
         bool LoadJoints()
         {
             if (SetBuffer == null)
-                SetBuffer = LoadJointSet(SetDataBuffer, Control, FeetBuffer);
+            {
+                SetBuffer = LoadSetBlockGroup(SetDataBuffer, Control, FeetBuffer);
 
-            if (SetBuffer == null ||
+                if (SetBuffer == null ||
                 BlockBuffer == null)
-            {
-                Write(Screen.DEBUG_STATIC, "Set load failed!\n", true);
-                return true;
-            }
+                {
+                    Write(Screen.DEBUG_STATIC, "Set load failed!\n");
+                    return true;
+                }
 
-            if (BlockBuffer.Count < 1)
-            {
-                Write(Screen.DEBUG_STATIC, "Nothing to load!\n", true);
-                return true;
+                if (BlockBuffer.Count < 1)
+                {
+                    Write(Screen.DEBUG_STATIC, "Nothing to load!\n");
+                    return true;
+                }
             }
 
             for (int i = LoadJointIndex; i < BlockBuffer.Count ; i++)
@@ -3283,11 +3270,11 @@ namespace IngameScript
             CockPitScreens[index].WriteText(input, append);
             return true;
         }
-        bool Write(Screen screen, StringBuilder input, bool append = false)
+        bool Write(Screen screen, StringBuilder input, bool append = true)
         {
             return Write(screen, input.ToString(), append);
         }
-        bool Write(Screen screen, string input, bool append = false)
+        bool Write(Screen screen, string input, bool append = true)
         {
             int index = (int)screen;
             if (index >= DebugScreens.Count ||
@@ -3458,33 +3445,45 @@ namespace IngameScript
             if (BuildingJoints)
             {
                 BuildingJoints = !LoadJoints();
+                Write(Screen.DEBUG_STATIC, DebugBinStatic);
+                return;
+            }
+
+            if (SavingData)
+            {
+                int saveResult = DataSave();
+                SavingData = saveResult == 0;
+                Write(Screen.DEBUG_STATIC, DebugBinStatic);
                 return;
             }
 
             if (LoadingData)
             {
-                if (Load() == -1)
-                    LoadingData = false;
-
+                int loadResult = Load();
+                LoadingData = loadResult == 0;
+                Write(Screen.DEBUG_STATIC, DebugBinStatic);
                 return;
             }
 
             switch (argument)
             {
-                case "SAVE":
+                case "SAVE_WRITE":
                     ForceSave = true;
                     Save();
                     ForceSave = false;
                     break;
 
+                case "SAVE_DATA":
+                    SavingData = true;
+                    break;
+
                 case "LOAD":
-                    Load();
-                    Write(Screen.DEBUG_STATIC, DebugBinStatic);
+                    LoadingData = true;
                     break;
 
                 case "CLEAR":
                     DebugBinStatic.Clear();
-                    Write(Screen.DEBUG_STATIC, "");
+                    Write(Screen.DEBUG_STATIC, "", false);
                     break;
 
                 default:
@@ -3517,10 +3516,6 @@ namespace IngameScript
             string[] load = Me.CustomData.Split('\n');
 
             DebugBinStatic.Append($"Load Lines Length: {load.Length}\n");
-
-            
-            //JointSet current = null;
-            //int debugCounter = 0;
 
             for (int i = LoadCustomDataIndex; i < load.Length; i++)
             {
@@ -3655,8 +3650,8 @@ namespace IngameScript
             TransferCount = TransferCount < DataTransferCap ? TransferCount : 0;
             return TransferCount == 0;
         }
-
         #endregion
+
         #region SAVING
         delegate int SaveJob();
 
@@ -3683,7 +3678,7 @@ namespace IngameScript
                     return result;
             }
 
-            SaveObjectIndex[(int)element]++;
+            IncrementSave(element);
             return 1;
         }
         int SaveSet()
@@ -3706,10 +3701,13 @@ namespace IngameScript
                 SetSaved = true;
             }
 
-            int seqResult = SaveStack(SaveSet, eRoot.SEQUENCE, set.Sequences);
+            int seqResult = SaveStack(SaveSequence, eRoot.SEQUENCE, set.Sequences);
             if (seqResult != 1)
                 return seqResult;
 
+            ResetSave(eRoot.FOOT);
+            ResetSave(eRoot.JOINT);
+            ResetSave(eRoot.SEQUENCE);
             SaveData.Append($"{JointSetTag}:{set.Name}:LOAD FINISHED\n");
             return 1;
         }
@@ -3727,20 +3725,25 @@ namespace IngameScript
             if (magResult != 1)
                 return magResult;
 
+            ResetSave(eRoot.TOE);
+            ResetSave(eRoot.MAGNET);
             SaveData.Append($"{foot.SaveData()}\n");
             return 1;
         }
         int SaveJoint()
         {
-            return GetSavingJoint().Save() ? 1 : -1;
+            Joint joint = GetSavingJoint();
+            return joint == null ? -1 : joint.Save() ? 1 : -1;
         }
         int SaveToe()
         {
-            return GetSavingToe().Save() ? 1 : -1;
+            Joint toe = GetSavingToe();
+            return toe == null ? -1 : toe.Save() ? 1 : -1;
         }
         int SaveMag()
         {
-            return GetSavingMagnet().Save() ? 1 : -1;
+            Magnet mag = GetSavingMagnet();
+            return mag == null ? -1 : mag.Save() ? 1 : -1;
         }
         int SaveSequence()
         {
@@ -3752,6 +3755,7 @@ namespace IngameScript
             if (frameResult != 1)
                 return frameResult;
 
+            ResetSave(eRoot.K_FRAME);
             SaveData.Append(seq.SaveData());
             return 1;
         }
@@ -3765,6 +3769,7 @@ namespace IngameScript
             if (frameResult != 1)
                 return frameResult;
 
+            ResetSave(eRoot.J_FRAME);
             SaveData.Append(frame.SaveData());
             return 1;
         }
@@ -3798,13 +3803,17 @@ namespace IngameScript
 
             DataInit = true;
         }
-        void IncrSave(eRoot root)
+        void IncrementSave(eRoot root)
         {
             SaveObjectIndex[(int)root]++;
         }
         void SetSave(eRoot root, int index)
         {
             SaveObjectIndex[(int)root] = index;
+        }
+        void ResetSave(eRoot root)
+        {
+            SaveObjectIndex[(int)root] = 0;
         }
         #endregion
 
