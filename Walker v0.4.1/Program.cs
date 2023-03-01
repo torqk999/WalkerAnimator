@@ -178,8 +178,7 @@ namespace IngameScript
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
 
-        const float ForceMax = 1000000;
-        const float ForceMin = ForceMax * .6f;
+        const float ForceMin = .6f;
 
         const float ClockIncrmentMag = 0.0005f;
         const float ClockSpeedDef = 0.005f;
@@ -253,13 +252,14 @@ namespace IngameScript
         public List<Toggle> Toggles;
         public List<Setting> Settings;
 
+        Toggle Descriptions;
         Toggle IgnoreSave;
         Toggle IgnoreFeet;
         Toggle AutoSave;
         Toggle AutoDemo;
         Toggle StatorTarget;
         Toggle StatorControl;
-
+        
         Setting StepThreshold;
         Setting MaxAcceleration;
         Setting MaxSpeed;
@@ -268,8 +268,6 @@ namespace IngameScript
 
         void SetupSettings()
         {
-            Echo("Yo wut up");
-
             StepThreshold = new Setting(this, "Step Threshold", "How long into a keyframe (%) the mech must walk for before a foot can re-attach again.",
                 0.6f, 0.05f);
 
@@ -285,8 +283,6 @@ namespace IngameScript
             SnappingValue = new Setting(this, "Snapping Increment", "Amount (Deg) which jointFrames will be incremented or decremented per press.",
                 5, 1, 45);
 
-            Echo("Yo wut up");
-
             Settings = new List<Setting>
             {
                 StepThreshold,
@@ -295,8 +291,6 @@ namespace IngameScript
                 MouseSensitivity,
                 SnappingValue,
             };
-
-            Echo("Yo wut up");
 
             Options.AddRange(Settings);
         }
@@ -311,7 +305,11 @@ namespace IngameScript
         {
             string[] data = input.Split(':');
             for (int i = 0; i < Settings.Count; i++)
-                Settings[i].Change(float.Parse(data[i + 1]));
+            {
+                try { Settings[i].Change(float.Parse(data[i + 1])); }
+                catch { }
+            }
+                
         }
         void SetupToggles()
         {
@@ -345,7 +343,10 @@ namespace IngameScript
         {
             string[] data = input.Split(':');
             for (int i = 0; i < Toggles.Count; i++)
-                Toggles[i].Change(bool.Parse(data[i + 1]));
+            {
+                try { Toggles[i].Change(bool.Parse(data[i + 1])); }
+                catch { }
+            }  
         }
 
         Vector3 RotationBuffer;
@@ -378,7 +379,6 @@ namespace IngameScript
             "Insert Item",
             "Delete Item",
             "Rename Item",
-            "Toggle Stator Target",
         };
         static readonly string[] EditorMenuButtons =
         {
@@ -386,10 +386,8 @@ namespace IngameScript
 
             "Increment",
             "Decrement",
-            "Snapping Increase",
-            "Snapping Decrease",
             "Overwrite Value",
-            "Set Snapping",
+            "Toggle Stator Target",
         };
         static readonly string[] LibraryMenuInputs =
         {
@@ -754,6 +752,7 @@ namespace IngameScript
         {
             public int FootIndex;
             public int GripDirection;
+            public float MaxForce;
             public IMyMechanicalConnectionBlock Connection;
 
             // Instance
@@ -792,7 +791,10 @@ namespace IngameScript
                 Connection = mechBlock;
                 Connection.Enabled = true;
             }
-
+            public void SetForce(bool max)
+            {
+                Connection.SetValue("Torque", max ? MaxForce : MaxForce * ForceMin);
+            }
             public override bool Save()
             {
                 if (Connection == null)
@@ -810,9 +812,14 @@ namespace IngameScript
                 {
                     FootIndex = int.Parse(data[4]);
                     GripDirection = int.Parse(data[5]);
-                    return true;
+                    
                 }
-                catch { return false; }
+                catch
+                {
+                    FootIndex = -1;
+                    GripDirection = 0;
+                }
+                return true;
             }
             public override string SaveData()
             {
@@ -824,7 +831,7 @@ namespace IngameScript
                 int b = forward ? 1 : 0;
 
                 LerpPoints[a] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[b];
-                LerpPoints[b] = frame.LerpPoint;
+                LerpPoints[b] = frame.MySetting.MyValue();
             }
             public void OverwriteAnimTarget(double value)
             {
@@ -874,7 +881,6 @@ namespace IngameScript
                         StatorVelocity = CorrectionDir * scale;
 
                         if (VelThreshold(scale))
-                        //if (scale < VelThreshLimit)
                             StatorVelocity = 0;
 
                         StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > Program.MaxAcceleration.MyValue()) ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
@@ -908,7 +914,7 @@ namespace IngameScript
             {
                 return Vector3.Zero;
             }
-            public virtual double ClampTargetValue(double target)
+            public virtual float ClampTargetValue(float target)
             {
                 return 0;
             }
@@ -933,7 +939,7 @@ namespace IngameScript
             {
 
             }
-            public virtual void UpdateStator()
+            public void UpdateStator()
             {
                 Connection.SetValueFloat("Velocity", (float)StatorVelocity);
             }
@@ -956,7 +962,7 @@ namespace IngameScript
             {
                 return Reference.Angle * RAD2DEG;
             }
-            public override double ClampTargetValue(double target)
+            public override float ClampTargetValue(float target)
             {
                 target = target < 0 ? 0 : target;
                 target = target > 10 ? 10 : target;
@@ -981,12 +987,7 @@ namespace IngameScript
                 ActiveTarget = ActiveTarget > 10 ? 10 : ActiveTarget;
                 ActiveTarget = ActiveTarget < 0 ? 0 : ActiveTarget;
             }
-            public override void UpdateStator()
-            {
-                base.UpdateStator();
 
-                //PistonBase.SetValueFloat("Velocity", (float)StatorVelocity);
-            }
         }
         class Rotor : Joint
         {
@@ -994,11 +995,13 @@ namespace IngameScript
 
             public Rotor(IMyMotorStator stator, JointData data) : base(stator, data)
             {
+                MaxForce = 1000000;
                 Stator = stator;
             }
 
             public Rotor(Program program, IMyMotorStator stator) : base(program, stator)
             {
+                MaxForce = 1000000;
                 Stator = stator;
             }
 
@@ -1010,7 +1013,7 @@ namespace IngameScript
             {
                 return Stator.Angle * RAD2DEG;
             }
-            public override double ClampTargetValue(double target)
+            public override float ClampTargetValue(float target)
             {
                 target %= 360;
                 target = target < 0 ? target + 360 : target;
@@ -1049,12 +1052,6 @@ namespace IngameScript
                 ActiveTarget = ActiveTarget % 360;
                 ActiveTarget = ActiveTarget < 0 ? ActiveTarget + 360 : ActiveTarget;
             }
-            public override void UpdateStator()
-            {
-                base.UpdateStator();
-
-                //Stator.SetValueFloat("Velocity", (float)StatorVelocity);
-            }
         }
         class Hinge : Joint
         {
@@ -1063,10 +1060,12 @@ namespace IngameScript
             public Hinge(IMyMotorStator stator, JointData data) : base(stator, data)
             {
                 Stator = stator;
+                MaxForce = 1000000000;
             }
             public Hinge(Program program, IMyMotorStator stator) : base(program, stator)
             {
                 Stator = stator;
+                MaxForce = 1000000000;
             }
             public override Vector3 ReturnRotationAxis()
             {
@@ -1076,7 +1075,7 @@ namespace IngameScript
             {
                 return Stator.Angle * RAD2DEG;
             }
-            public override double ClampTargetValue(double target)
+            public override float ClampTargetValue(float target)
             {
                 target = target < -90 ? -90 : target;
                 target = target > 90 ? 90 : target;
@@ -1101,12 +1100,6 @@ namespace IngameScript
                 ActiveTarget = ActiveTarget % 360;
                 ActiveTarget = ActiveTarget > 180 ? ActiveTarget - 360 : ActiveTarget;
                 ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
-            }
-            public override void UpdateStator()
-            {
-                base.UpdateStator();
-
-                //Stator.SetValueFloat("Velocity", (float)StatorVelocity);
             }
         }
         
@@ -1192,16 +1185,13 @@ namespace IngameScript
                 if (!base.Load(data))
                     return false;
 
-                try
-                {
-                    GroupName = data[4];
-                    return true;
-                }
-                catch { return false; }
+                try { GroupName = data[4]; }
+                catch { GroupName = null; }
+                return true;
             }
             public override string SaveData()
             {
-                return $"{base.SaveData()}:{GroupName}";
+                return $"{base.SaveData()}:{(GroupName == null ? "" : GroupName)}";
             }
 
             public void UnlockFeet()
@@ -1453,12 +1443,9 @@ namespace IngameScript
                 if (!base.Load(data))
                     return false;
 
-                try
-                {
-                    FootIndex = int.Parse(data[4]);
-                    return true;
-                }
-                catch { return false; }
+                try { FootIndex = int.Parse(data[4]); }
+                catch { FootIndex = -1; }
+                return true;
             }
 
             public override bool Save()
@@ -1493,6 +1480,10 @@ namespace IngameScript
             public bool CheckTouching()
             {
                 return Gear.LockMode == LandingGearMode.ReadyToLock;
+            }
+            public bool CheckLocked()
+            {
+                return Gear.LockMode == LandingGearMode.Locked;
             }
         }
         class Foot : Root
@@ -1559,13 +1550,9 @@ namespace IngameScript
             public bool CheckLocked()
             {
                 foreach (Magnet gear in Magnets)
-                    if (gear.Gear.LockMode == LandingGearMode.Locked)
-                    {
-                        ToggleLock();
+                    if (gear.CheckLocked())
                         return true;
-                    }
-
-                ToggleLock(false);
+                
                 return false;
             }
             void ToggleGrip(bool gripping = true)
@@ -1576,7 +1563,7 @@ namespace IngameScript
             void ToggleForce(bool maxForce)
             {
                 foreach (Joint planar in Planars)
-                    planar.Connection.SetValueFloat("Torque", maxForce ? ForceMax : ForceMin);
+                    planar.SetForce(maxForce);
             }
             public void UpdateFootPlaneing(bool toggle)
             {
@@ -1608,50 +1595,69 @@ namespace IngameScript
                     PlanarRatio.SetDim(i, 1 / PlanarRatio.GetDim(i));
             }
         }
-        class JointFrame : Root
+        class Animation : Root
         {
-            public Joint Joint;
-            public double LerpPoint;
+            public Setting MySetting;
 
-            public JointFrame(RootData root, Joint joint, bool snapping = true) : base(root) // Snapshot
+            public Animation(RootData data) : base(data)
             {
-                TAG = JframeTag;
-                Joint = joint;
-                double point = Joint.ReturnCurrentStatorPosition();
-                if (snapping)
-                {
-                    point = (int)point;
-                }
-                LerpPoint = point;
+
             }
-            public JointFrame(string input, Program program, Joint joint) : base(input, program)
+
+            public Animation(string input, Program program) : base(input, program)
             {
-                StaticDlog("Jframe Constructor:");
-                Joint = joint;
+
             }
-            public void ChangeStatorLerpPoint(double value)
+
+            public virtual void GenerateSetting(float init)
             {
-                LerpPoint = Joint.ClampTargetValue(value);
+
             }
             public override bool Load(string[] data)
             {
                 if (!base.Load(data))
                     return false;
 
-                try
-                {
-                    LerpPoint = double.Parse(data[4]);
-                    return true;
-                }
-                catch { return false; }
-            }
+                StaticDlog($"Anim Load:{TAG}");
 
+                try { GenerateSetting(float.Parse(data[4])); }
+                catch { GenerateSetting(0); }
+                return true;
+            }
             public override string SaveData()
             {
-                return $"{base.SaveData()}:{LerpPoint}";
+                return $"{base.SaveData()}:{(MySetting == null ? 0 : MySetting.MyValue())}";
             }
         }
-        class KeyFrame : Root
+        class JointFrame : Animation
+        {
+            public Joint Joint;
+
+            public JointFrame(RootData root, Joint joint, bool snapping = true) : base(root) // Snapshot
+            {
+                TAG = JframeTag;
+                Joint = joint;
+                GenerateSetting((float)Joint.ReturnCurrentStatorPosition());
+                if (snapping)
+                {
+                    MySetting.Change((int)MySetting.MyValue());
+                }
+            }
+            public JointFrame(string input, Program program, Joint joint) : base(input, program)
+            {
+                StaticDlog("Jframe Constructor:");
+                Joint = joint;
+            }
+            public override void GenerateSetting(float init)
+            {
+                MySetting = new Setting(Program, "Joint Position", "The animation value of the joint associated joint within a given keyFrame.", init, Program.Snapping ? 1 : 0.1f);
+            }
+            public void ChangeStatorLerpPoint(float value)
+            {
+                MySetting.Change(Joint.ClampTargetValue(value));
+            }
+        }
+        class KeyFrame : Animation
         {
             public List<Root> Jframes = new List<Root>();
             public JointFrame GetJointFrame(int index)
@@ -1675,13 +1681,16 @@ namespace IngameScript
             {
                 Jframes.Sort(MySort);
             }
+            public override void GenerateSetting(float init)
+            {
+                MySetting = new Setting(Program, "Frame Length", "The time that will be displaced between this frame, and the one an index ahead", init, ClockIncrmentMag);
+            }
         }
-        class Sequence : Root
+        class Sequence : Animation
         {
             /// EXTERNALS ///
             public List<Root> Frames = new List<Root>();
             public JointSet JointSet;
-            public Setting ClockSpeed;
             public KeyFrame CurrentFrame;
 
             // Logic
@@ -1695,14 +1704,13 @@ namespace IngameScript
             {
                 TAG = SeqTag;
                 JointSet = set;
-                SetClock(ClockSpeedDef);
+                GenerateSetting(ClockSpeedDef);
             }
             public Sequence(string input, Program program, JointSet set, List<KeyFrame> buffer) : base(input, program)
             {
                 JointSet = set;
                 Frames.AddRange(buffer);
             }
-
             public KeyFrame GetKeyFrame(int index)
             {
                 if (index < 0 || index >= Frames.Count)
@@ -1730,28 +1738,11 @@ namespace IngameScript
                 for (int i = 0; i < Frames.Count; i++)
                     Frames[i].MyIndex = i;
             }
-            void SetClock(float init)
+            public override void GenerateSetting(float init)
             {
-                ClockSpeed = new Setting(Program, "Clock Speed", "Speed at which the sequence will interpolate between frames", init, ClockIncrmentMag, ClockSpeedCap, ClockSpeedMin);
+                MySetting = new Setting(Program, "Clock Speed", "Speed at which the sequence will interpolate between frames", init, ClockIncrmentMag, ClockSpeedCap, ClockSpeedMin);
             }
-            public override bool Load(string[] data)
-            {
-                if (!base.Load(data))
-                    return false;
 
-                StaticDlog("Seq Load:");
-
-                try
-                {
-                    SetClock(float.Parse(data[4]));
-                    return true;
-                }
-                catch { return false; }
-            }
-            public override string SaveData()
-            {
-                return $"{base.SaveData()}:{ClockSpeed.MyValue()}";
-            }
             public void ZeroSequence()
             {
                 LoadFrame(0, true, false);
@@ -1801,7 +1792,7 @@ namespace IngameScript
                 foreach (JointFrame jFrame in GetKeyFrame(index).Jframes)
                 {
                     StaticDlog($"Joint: {jFrame.Joint != null}");
-                    jFrame.Joint.OverwriteAnimTarget(jFrame.LerpPoint);
+                    jFrame.Joint.OverwriteAnimTarget(jFrame.MySetting.MyValue());
                 }
                     
 
@@ -1861,7 +1852,7 @@ namespace IngameScript
 
                     case ClockMode.FOR:
                         forward = true;
-                        CurrentClockTime += ClockSpeed.MyValue();
+                        CurrentClockTime += MySetting.MyValue();
                         CurrentClockTime = CurrentClockTime < 1 ? CurrentClockTime : 1;
                         if ((CurrentClockTime == 1 && Program.WithinTargetThreshold)||
                             (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
@@ -1880,7 +1871,7 @@ namespace IngameScript
 
                     case ClockMode.REV:
                         forward = false;
-                        CurrentClockTime -= ClockSpeed.MyValue();
+                        CurrentClockTime -= MySetting.MyValue();
                         CurrentClockTime = CurrentClockTime > 0 ? CurrentClockTime : 0;
                         if ((CurrentClockTime == 0 && Program.WithinTargetThreshold) ||
                             (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
@@ -2292,7 +2283,29 @@ namespace IngameScript
         {
             List<string> stringList = new List<string>();
             stringList.Add("======Library======");
-            stringList.Add($"===(Snapping:{SnappingValue.MyValue()})===");
+            Animation anim = null;
+            switch(CurrentGUILayer)
+            {
+                case GUILayer.SEQUENCE:
+                    anim = GetSelectedSequence();
+                    break;
+
+                case GUILayer.K_FRAME:
+                    anim = GetSelectedKeyFrame();
+                    break;
+
+                case GUILayer.J_FRAME:
+                    anim = GetSelectedJointFrame();
+                    break;
+            }
+            if (anim != null)
+            {
+                stringList.Add($"= {anim.MySetting.Name} : {anim.MySetting.MyValue()} =");
+                LineWrapper(stringList, anim.MySetting.Description, CharTotalCount);
+            }
+                
+            else
+                stringList.Add($"=================");
 
             HeaderSize = stringList.Count;
             int layer = (int)CurrentGUILayer;
@@ -2339,7 +2352,7 @@ namespace IngameScript
                             for (int jFrameIndex = 0; jFrameIndex < seq.GetKeyFrame(kFrameIndex).Jframes.Count(); jFrameIndex++)
                             {
                                 JointFrame jFrame = seq.GetKeyFrame(kFrameIndex).GetJointFrame(jFrameIndex);
-                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList,$"{jFrame.Joint.Connection.CustomName}:{jFrame.LerpPoint}");
+                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList,$"{jFrame.Joint.Connection.CustomName}:{jFrame.MySetting.MyValue()}");
                             }
                         }
                     }
@@ -2569,44 +2582,38 @@ namespace IngameScript
                     break;
 
                 case 7:
-                    EditItem();
+                    EditName();
                     break;
 
-                case 8:
-                    StatorTarget.Adjust();
-                    break;
             }
         }
         void EditMenuFunctions(int button)
         {
+            if (button == 2)
+            {
+                CurrentGUIMode = GUIMode.CREATE;
+                return;
+            }
+            Animation anim = GetSelectedAnim();
+            if (anim == null)
+                return;
+
             switch(button)
             {
-                case 2:
-                    CurrentGUIMode = GUIMode.CREATE;
-                    break;
-
                 case 3:
-                    IncrementLerpPoint(true);
+                    anim.MySetting.Adjust(true);
                     break;
 
                 case 4:
-                    IncrementLerpPoint(false);
+                    anim.MySetting.Adjust(false);
                     break;
 
                 case 5:
-                    SnappingValue.Adjust(true);
+                    EditValue();
                     break;
 
                 case 6:
-                    SnappingValue.Adjust(false);
-                    break;
-
-                case 7:
-                    ChangeSnappingValue();
-                    break;
-
-                case 8:
-                    EditItem();
+                    StatorTarget.Adjust();
                     break;
             }
         }
@@ -2801,7 +2808,7 @@ namespace IngameScript
                 return false;
             }
         }
-        bool UserInputFloat(ref float buffer)
+        bool UserInputFloat(out float buffer)
         {
             try
             {
@@ -2812,6 +2819,7 @@ namespace IngameScript
             }
             catch
             {
+                buffer = 0;
                 return false;
             }
         }
@@ -2878,45 +2886,30 @@ namespace IngameScript
             for (int i = 0; i < JsetBin.Count; i++)
                 JsetBin[i].MyIndex = i;
         }
-        void EditItem()
+        void EditValue()
         {
-            float value = 0;
+            float value;
+            if (!UserInputFloat(out value))
+                return;
+
+            Animation anim = GetSelectedAnim();
+            if (anim == null)
+                return;
+
+            anim.MySetting.Change(value);
+        }
+        void EditName()
+        {
             string name = null;
             UserInputString(ref name);
-            if (name != null && name.Contains(":"))
+            if (name == null)
                 return;
-            bool floatGood = UserInputFloat(ref value);
 
-            try
-            {
-                switch (CurrentGUILayer)
-                {
-                    case GUILayer.JSET:
-                        JsetBin[SelectedObjectIndex[0]].Name = name;
-                        break;
+            Animation anim = GetSelectedAnim();
+            if (anim == null)
+                return;
 
-                    case GUILayer.SEQUENCE:
-                        GetSelectedSequence().Name = name;
-                        break;
-
-                    case GUILayer.K_FRAME:
-                        GetSelectedKeyFrame().Name = name;
-                        break;
-
-                    case GUILayer.J_FRAME:
-                        /*if (floatGood)
-                        {
-                            JsetBin[SelectedObjectIndex[0]].GetSequence(SelectedObjectIndex[1]).GetKeyFrame(SelectedObjectIndex[2]).GetJointFrame(SelectedObjectIndex[3]).ChangeStatorLerpPoint(value);
-                        }
-                        else
-                            JsetBin[SelectedObjectIndex[0]].Joints[SelectedObjectIndex[3]].Name = name;*/
-                        break;
-                }
-            }
-            catch
-            {
-                // I dunno, I'm tired bruh
-            }
+            anim.Name = name;
         }
         void InsertItem(bool add = true)
         {
@@ -3017,13 +3010,13 @@ namespace IngameScript
                 return;
             }
         }
-        void ChangeSnappingValue()
+        /*void ChangeSnappingValue()
         {
             float input = 0;
             if (!UserInputFloat(ref input))
                 return;
             SnappingValue.Change(input);
-        }
+        }*/
         void IncrementLerpPoint(bool incr = true)
         {
             if (CurrentGUILayer != GUILayer.J_FRAME)
@@ -3031,8 +3024,8 @@ namespace IngameScript
 
             JointFrame jFrame = GetSelectedJointFrame();
 
-            double newLerpPoint = incr ? jFrame.LerpPoint + SnappingValue.MyValue() : jFrame.LerpPoint - SnappingValue.MyValue();
-            jFrame.ChangeStatorLerpPoint(newLerpPoint);
+            double newLerpPoint = incr ? jFrame.MySetting.MyValue() + SnappingValue.MyValue() : jFrame.MySetting.MyValue() - SnappingValue.MyValue();
+            jFrame.ChangeStatorLerpPoint((float)newLerpPoint);
         }
 
         int Selected(GUILayer layer)
@@ -3791,6 +3784,23 @@ namespace IngameScript
         JointSet GetSelectedSet()
         {
             return GetJointSet(Selected(GUILayer.JSET));
+        }
+        Animation GetSelectedAnim()
+        {
+            switch(CurrentGUILayer)
+            {
+                case GUILayer.SEQUENCE:
+                    return GetSelectedSequence();
+
+                case GUILayer.K_FRAME:
+                    return GetSelectedKeyFrame();
+
+                case GUILayer.J_FRAME:
+                    return GetSelectedJointFrame();
+
+                default:
+                    return null;
+            }
         }
         Sequence GetSavingSequence()
         {
