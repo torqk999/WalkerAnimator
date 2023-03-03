@@ -151,7 +151,7 @@ namespace IngameScript
         #region MAIN
 
         #region CONSTS
-        UpdateFrequency PROG_FREQ = UpdateFrequency.Update1; 
+        UpdateFrequency PROG_FREQ = UpdateFrequency.Update1;
         const string LCDgroupName = "LCDS";
         const string FlightGroupName = "FLIGHT";
         const string FootSignature = "[FOOT]";
@@ -173,7 +173,7 @@ namespace IngameScript
         const string GripTag = "G";
 
         const float VelThreshLimit = .02f;
-        const float DisThreshLimit = 5f;
+        const float DisThreshLimit = 3f;
         const float DEG2VEL = .5f;
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
@@ -244,22 +244,21 @@ namespace IngameScript
         bool CapLines = true;
         bool Snapping = true;
         bool Initialized = false;
-        bool Flying = true;
-        bool Planeing = false;
         bool WithinTargetThreshold = false;
 
         public List<Option> Options = new List<Option>();
         public List<Toggle> Toggles;
         public List<Setting> Settings;
 
-        Toggle Descriptions;
         Toggle IgnoreSave;
         Toggle IgnoreFeet;
         Toggle AutoSave;
         Toggle AutoDemo;
         Toggle StatorTarget;
         Toggle StatorControl;
-        
+        Toggle Orientation;
+        Toggle Descriptions;
+
         Setting StepThreshold;
         Setting MaxAcceleration;
         Setting MaxSpeed;
@@ -309,16 +308,19 @@ namespace IngameScript
                 try { Settings[i].Change(float.Parse(data[i + 1])); }
                 catch { }
             }
-                
+
         }
         void SetupToggles()
         {
+
             IgnoreSave = new Toggle(this, "Ignore Save", "Prevents the CustomData of the PB from being over-written auto-matically (eg. recompile/game save)", true);
             IgnoreFeet = new Toggle(this, "Ignore Feet", "Prevents the use of anything relating to feet, including locking and plane actuation.", false);
             AutoSave = new Toggle(this, "Auto Save", "Will auto-matically save any changes to the mechs library after any change is made.", true);
             AutoDemo = new Toggle(this, "Auto Demo", "Will auto-matically change the stator targets to the key-frame that gets selected", true);
             StatorTarget = new Toggle(this, "Stator Target", "Enables whether Stators are actively fed a new target every operation tick", true);
             StatorControl = new Toggle(this, "Stator Control", "Enables whether Stators are affected at all by the program", true);
+            Descriptions = new Toggle(this, "Descriptions", "Enables in-game descriptions of options.", true);
+            Orientation = new Toggle(this, "Orientation", "Enables the use to orient the mech using the controller inputs of the cockpit", true);
 
             Toggles = new List<Toggle>
             {
@@ -327,7 +329,9 @@ namespace IngameScript
                 AutoSave,
                 AutoDemo,
                 StatorTarget,
-                StatorControl
+                StatorControl,
+                Descriptions,
+                Orientation
             };
 
             Options.AddRange(Toggles);
@@ -346,13 +350,13 @@ namespace IngameScript
             {
                 try { Toggles[i].Change(bool.Parse(data[i + 1])); }
                 catch { }
-            }  
+            }
         }
 
         Vector3 RotationBuffer;
         float TurnBuffer = 0;
         int LastMechInput;
-        int ReleaseTimer = 0;
+        //int ReleaseTimer = 0;
         int[] LastMenuInput = new int[2];
         #endregion
 
@@ -475,15 +479,16 @@ namespace IngameScript
         StringBuilder DisplayManagerBuilder;
         StringBuilder ButtonBuilder;
         StringBuilder SplashBuilder;
+        StringBuilder InputReader;
         StringBuilder SaveData;
         #endregion
 
         #region ENUMS
         public enum ClockMode
         {
-            PAUSE,
-            FOR,
-            REV,
+            REV = -1,
+            PAUSE = 0,
+            FOR = 1,
         }
         public enum GUIMode
         {
@@ -523,13 +528,17 @@ namespace IngameScript
         }
         public enum Screen
         {
+            // LCD's
+            MECH_STATUS = 2,
             DEBUG_TEST = 3,
             DEBUG_STREAM = 4,
             DEBUG_STATIC = 5,
             DIAGNOSTICS = 0,
+
+            // Cockpit
+            INPUT = 0,
             SPLASH = 1,
-            CONTROLS = 0,
-            MECH_STATUS = 2
+            CONTROLS = 2
         }
         #endregion
 
@@ -643,7 +652,7 @@ namespace IngameScript
 
             public override void Adjust(bool incr = true)
             {
-                Value += incr? Increment : -Increment;
+                Value += incr ? Increment : -Increment;
                 Clamp();
             }
 
@@ -759,6 +768,7 @@ namespace IngameScript
             public double[] LerpPoints = new double[2];
             public bool Planeing = false;
             public bool Gripping = false;
+            public bool TargetThreshold = false;
 
             // Raw Target Values
             public double PlaneCorrection;
@@ -791,6 +801,11 @@ namespace IngameScript
                 Connection = mechBlock;
                 Connection.Enabled = true;
             }
+            public bool IsAlive()
+            {
+                try { return Connection.IsWorking; }
+                catch { return false; }
+            }
             public void SetForce(bool max)
             {
                 Connection.SetValue("Torque", max ? MaxForce : MaxForce * ForceMin);
@@ -812,7 +827,7 @@ namespace IngameScript
                 {
                     FootIndex = int.Parse(data[4]);
                     GripDirection = int.Parse(data[5]);
-                    
+
                 }
                 catch
                 {
@@ -838,13 +853,19 @@ namespace IngameScript
                 AnimTarget = value;
             }
 
-            public bool UpdateJoint(bool activeTargetTracking)
+            public void UpdateJoint(bool activeTargetTracking)
             {
+                if (!IsAlive())
+                {
+                    TargetThreshold = false;
+                    return;
+                }
+
                 UpdateLiteralVelocity();
                 if (!activeTargetTracking)
                 {
                     UpdateStatorVelocity(activeTargetTracking);
-                    return true;
+                    return;
                 }
 
                 ActiveTarget = AnimTarget;
@@ -858,7 +879,7 @@ namespace IngameScript
                 }
 
                 UpdateStatorVelocity(activeTargetTracking);
-                return DisThreshold();
+                TargetThreshold = DisThreshold();
             }
             void UpdateLiteralVelocity()
             {
@@ -1102,7 +1123,7 @@ namespace IngameScript
                 ActiveTarget = ActiveTarget > 90 ? 90 : ActiveTarget;
             }
         }
-        
+
         class JointSet : Root
         {
             public string GroupName;
@@ -1118,9 +1139,10 @@ namespace IngameScript
             public Vector3D PlaneBuffer;
             public Vector3D TurnBuffer;
 
-            public bool StepTrigger = true;
-            public int Stepping;
-            public int Releasing;
+            public bool Locked;
+            public bool StepInterrupt;
+            public int LockedIndex;
+            int ReleaseTimer = 0;
 
             public JointSet(RootData root, IMyTerminalBlock plane, string groupName) : base(root)
             {
@@ -1194,126 +1216,125 @@ namespace IngameScript
                 return $"{base.SaveData()}:{(GroupName == null ? "" : GroupName)}";
             }
 
-            public void UnlockFeet()
+            public bool UpdateJoints()
             {
-                foreach (Foot foot in Feet)
-                    foot.ToggleLock(false);
+                bool withinThreshold = true;
+                foreach (Joint joint in Joints)
+                {
+                    joint.UpdateJoint(Program.StatorTarget.MyState());
+                    if (withinThreshold)
+                        withinThreshold = joint.TargetThreshold;
+                }
+                return withinThreshold;
             }
             public bool UpdateFootLockStatus()
             {
-                Foot first = null;
+                ReleaseTimer -= 1;
+                ReleaseTimer = ReleaseTimer < 0 ? 0 : ReleaseTimer;
 
-                foreach (Foot foot in Feet)
-                    if (foot.CheckLocked())
-                    {
-                        first = foot;
-                        break;
-                    }
+                if (StepInterrupt)
+                    return false;
 
-                if (first != null)
-                    foreach (Foot foot in Feet)
-                        if (foot.CheckLocked() &&
-                            foot != first)
-                            foot.ToggleLock(false);
+                bool oldState = Locked;
+                Foot locked = GetFoot(LockedIndex);
+                Locked = locked != null && locked.CheckLocked();
+                bool changed = oldState != Locked;
 
-                return first != null;
+                if (!Locked && ReleaseTimer <= 0) // TouchDown
+                    NewLockCandidate();
+
+                if (changed)
+                    UnlockOtherFeet();
+
+                return changed;
             }
-            public bool TouchDown()
+            public bool CheckStep(bool forward = true)
             {
-                if (GetFoot(0).CheckTouching())
+                Foot step = GetFoot(StepIndex(forward));
+                Foot release = GetFoot(LockedIndex);
+
+                bool touch = step != null && step.CheckTouching();
+                bool locked = step != null && step.CheckLocked();
+                bool released = release != null && !release.CheckLocked();
+
+                if (!touch && !locked) // Any attempt to step?
                 {
-                    InitializeGrip();
-                    return true;
-                }
-                if (GetFoot(1).CheckTouching())
-                {
-                    InitializeGrip(false);
-                    return true;
-                }
-                return false;
-            }
-
-            public bool CheckStep(float lerpTime, bool forward)
-            {
-                float triggerTime = forward ? lerpTime : 1 - lerpTime;
-
-                // reset for the RS latch
-                if (StepTrigger)
-                {
-                    if (triggerTime >= Program.StepThreshold.MyValue())
-                        StepTrigger = false;
-                    else
-                        return false;
-                }
-
-                bool footCheck = false;
-
-                // determine currently locked and checking foot
-                if (GetFoot(Stepping).CheckTouching())
-                    GetFoot(Stepping).ToggleLock();
-
-                if (GetFoot(Stepping).CheckLocked())
-                    footCheck = true;
-
-                if (footCheck) // Initial contact
-                {
-                    StepTrigger = true;
-
-                    if (Stepping != -1)
-                    {
-                        Stepping = Stepping + 1 >= Feet.Count ? 0 : Stepping + 1;
-                    }
-
-                    if (Releasing != -1)
-                    {
-                        GetFoot(Releasing).ToggleLock(false);
-                        Releasing = Releasing + 1 >= Feet.Count ? 0 : Releasing + 1;
-                    }
-
-                    return true; // Lock successful
-                }
-                return false; // Lock failed
-            }
-            public bool InitFootStatus()
-            {
-                foreach (Foot foot in Feet)
-                    foot.GearInit();
-
-                if (GetFoot(0).CheckTouching() ||
-                    GetFoot(0).CheckLocked())
-                {
-                    InitializeGrip();
-                    return true;
-                }
-                if (GetFoot(1).CheckTouching() ||
-                    GetFoot(1).CheckLocked())
-                {
-                    InitializeGrip(false);
-                    return true;
-                }
-                return false;
-            }
-            public bool InitializeGrip(bool left = true)
-            {
-                try
-                {
-                    int unlock = left ? 1 : 0;
-                    int locking = left ? 0 : 1;
-
-                    GetFoot(locking).ToggleLock();
-                    Releasing = locking;
-                    GetFoot(unlock).ToggleLock(false);
-                    Stepping = unlock;
-
-                    string side = left ? "Left" : "Right";
-
-                    return true;
-                }
-                catch
-                {
+                    StepInterrupt = false;
                     return false;
                 }
+                    
+                StepInterrupt = true;
+
+                if (touch) // Initial contact
+                    step.ToggleLock(); // lock foot
+
+                if (locked && release != null) // Initial lock
+                    release.ToggleLock(false); // Release
+
+                if (StepInterrupt && released) // Initial release
+                    StepInterrupt = false;
+
+                return !StepInterrupt; // Still Stepping?
             }
+            public void UnlockAllFeet()
+            {
+                ReleaseTimer = ReleaseCount;
+                LockedIndex = -1;
+                UnlockOtherFeet();
+            }
+            public void IncrementStepping(ClockMode mode)
+            {
+                IncrementStepping(mode != ClockMode.REV ? 1 : -1);
+            }
+            public void InitFootStatus()
+            {
+                NewLockCandidate();
+
+                foreach (Foot foot in Feet)
+                    foot.GearInit();
+            }
+
+            int StepIndex(bool forward)
+            {
+                int stepIndex = LockedIndex + (forward ? 1 : -1);
+                stepIndex = stepIndex < 0 ? Feet.Count - 1 : stepIndex >= Feet.Count ? 0 : stepIndex;
+                return stepIndex;
+            }
+            void UnlockOtherFeet()
+            {
+                Foot expected = GetFoot(LockedIndex);
+                foreach (Foot foot in Feet)
+                    if (foot != expected)
+                        foot.ToggleLock(false);
+            }
+            void IncrementStepping(int incr)
+            {
+                SetLockedIndex(LockedIndex + incr);
+            }
+            void SetLockedIndex(int step)
+            {
+                LockedIndex = step;
+                LockedIndex = LockedIndex < 0 ? Feet.Count - 1 : LockedIndex >= Feet.Count ? 0 : LockedIndex;
+            }
+            void NewLockCandidate()
+            {
+                StreamDlog("New Lock Candidate...");
+                for (int i = 0; i < Feet.Count; i++)
+                {
+                    Foot check = GetFoot(i);
+                    if (check.CheckLocked() || check.CheckTouching())
+                    {
+                        check.ToggleLock(true);
+                        LockedIndex = i;
+
+                        if (Program.CurrentWalk != null)
+                            Program.CurrentWalk.StepDelay = true;
+                        return;
+                    }
+                }
+                LockedIndex = -1;
+            }
+            
             public void ZeroJointSet()
             {
                 foreach (Joint joint in Joints)
@@ -1329,11 +1350,11 @@ namespace IngameScript
             }
             public void TogglePlaneing(bool toggle)
             {
-                if (toggle)
+                if (toggle && Locked)
                     SnapShotPlane();
 
                 foreach (Foot foot in Feet)
-                    foot.UpdateFootPlaneing(toggle);
+                    foot.UpdateFootPlaneing(toggle && Locked);
             }
             void UpdatePlaneBuffer(Vector3 playerInput)
             {
@@ -1353,13 +1374,13 @@ namespace IngameScript
 
                 TurnBuffer.Y = playerTurn;
             }
-            public bool UpdatePlanars(Vector3 playerInput, float playerTurn)
+            public bool UpdatePlanars()
             {
                 if (Plane == null)
                     return false;
 
-                UpdatePlaneBuffer(playerInput);
-                UpdateTurnBuffer(playerTurn);
+                UpdatePlaneBuffer(Program.RotationBuffer);
+                UpdateTurnBuffer(Program.TurnBuffer);
 
                 bool safety = false;
                 for (int i = 0; i < 3; i++)
@@ -1462,7 +1483,7 @@ namespace IngameScript
                 return $"{base.SaveData()}:{FootIndex}";
             }
 
-            public void GearInit()
+            public void InitializeGear()
             {
                 Gear.AutoLock = false;
                 Gear.Enabled = true;
@@ -1472,16 +1493,27 @@ namespace IngameScript
             {
                 Gear.AutoLock = locking;
                 if (locking)
+                {
                     Gear.Lock();
+                    Gear.AutoLock = true;
+                }  
                 else
+                {
                     Gear.Unlock();
+                    Gear.AutoLock = false;
+                }
+                    
             }
-
-            public bool CheckTouching()
+            public bool IsAlive()
+            {
+                try { return Gear.IsWorking; }
+                catch { return false; }
+            }
+            public bool IsTouching()
             {
                 return Gear.LockMode == LandingGearMode.ReadyToLock;
             }
-            public bool CheckLocked()
+            public bool IsLocked()
             {
                 return Gear.LockMode == LandingGearMode.Locked;
             }
@@ -1527,7 +1559,7 @@ namespace IngameScript
             public void GearInit()
             {
                 foreach (Magnet magnet in Magnets)
-                    magnet.GearInit();
+                    magnet.InitializeGear();
             }
             public void ToggleLock(bool locking = true)
             {
@@ -1541,19 +1573,29 @@ namespace IngameScript
             }
             public bool CheckTouching()
             {
+                bool result = false;
                 foreach (Magnet magnet in Magnets)
-                    if (magnet.CheckTouching())
-                        return true;
+                    if (magnet.IsAlive() && magnet.IsTouching())
+                    {
+                        result = true;
+                        break;
+                    }
 
-                return false;
+                StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
+                return result;
             }
             public bool CheckLocked()
             {
+                bool result = false;
                 foreach (Magnet gear in Magnets)
-                    if (gear.CheckLocked())
-                        return true;
-                
-                return false;
+                    if (gear.IsAlive() && gear.IsLocked())
+                    {
+                        result = true;
+                        break;
+                    }
+
+                StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
+                return result;
             }
             void ToggleGrip(bool gripping = true)
             {
@@ -1698,7 +1740,8 @@ namespace IngameScript
             public ClockMode CurrentClockMode = ClockMode.PAUSE;
             public float CurrentClockTime = 0;
             public int CurrentFrameIndex = 0;
-            public bool bFrameLoadForward;
+            public bool FrameLoadForward;
+            public bool StepDelay;
 
             public Sequence(RootData root, JointSet set = null) : base(root)
             {
@@ -1745,7 +1788,7 @@ namespace IngameScript
 
             public void ZeroSequence()
             {
-                LoadFrame(0, true, false);
+                LoadFrame(0, false);
                 RisidualClockMode = CurrentClockMode;
                 CurrentClockMode = ClockMode.PAUSE;
                 CurrentClockTime = 0;
@@ -1794,17 +1837,19 @@ namespace IngameScript
                     StaticDlog($"Joint: {jFrame.Joint != null}");
                     jFrame.Joint.OverwriteAnimTarget(jFrame.MySetting.MyValue());
                 }
-                    
+
 
                 return true;
             }
-            public bool UpdateSequence(bool ignoreFeet = true)
+            public bool UpdateSequence()
             {
                 if (CurrentFrame == null ||
                     CurrentClockMode == ClockMode.PAUSE)
                     return false;
 
-                UpdateTriggers(ignoreFeet);
+                StreamDlog("Update Sequence...");
+
+                UpdateTriggers();
                 LerpFrame(CurrentClockTime);
                 return true;
             }
@@ -1838,63 +1883,56 @@ namespace IngameScript
                 return true;
             }
 
-            void UpdateTriggers(bool ignoreFeet)
+            void UpdateTriggers()
             {
-                bool load = false;
-                bool forward = false;
-                bool interrupt = false;
-
-                switch (CurrentClockMode)
+                UpdateSequenceClock();
+                if (CheckFrameTimer())
                 {
-                    case ClockMode.PAUSE:
-
-                        return;
-
-                    case ClockMode.FOR:
-                        forward = true;
-                        CurrentClockTime += MySetting.MyValue();
-                        CurrentClockTime = CurrentClockTime < 1 ? CurrentClockTime : 1;
-                        if ((CurrentClockTime == 1 && Program.WithinTargetThreshold)||
-                            (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
-                        {
-                            CurrentClockTime = 0;
-                            CurrentFrameIndex++;
-                            CurrentFrameIndex = CurrentFrameIndex >= Frames.Count ? 0 : CurrentFrameIndex;
-                            if (!bFrameLoadForward)
-                            {
-                                CurrentFrameIndex++;
-                                CurrentFrameIndex = CurrentFrameIndex >= Frames.Count ? 0 : CurrentFrameIndex;
-                            }
-                            load = true;
-                        }
-                        break;
-
-                    case ClockMode.REV:
-                        forward = false;
-                        CurrentClockTime -= MySetting.MyValue();
-                        CurrentClockTime = CurrentClockTime > 0 ? CurrentClockTime : 0;
-                        if ((CurrentClockTime == 0 && Program.WithinTargetThreshold) ||
-                            (!ignoreFeet && JointSet.CheckStep(CurrentClockTime, forward)))
-                        {
-                            CurrentClockTime = 1;
-                            CurrentFrameIndex--;
-                            CurrentFrameIndex = CurrentFrameIndex < 0 ? Frames.Count - 1 : CurrentFrameIndex;
-                            if (bFrameLoadForward)
-                            {
-                                CurrentFrameIndex--;
-                                CurrentFrameIndex = CurrentFrameIndex < 0 ? Frames.Count - 1 : CurrentFrameIndex;
-                            }
-                            load = true;
-                        }
-                        break;
+                    AdvanceFrameIndex();
+                    LoadFrame(CurrentFrameIndex, false);
                 }
 
-                if (!load)
+                UpdateStepDelay();
+                if (!Program.IgnoreFeet.MyState() && !StepDelay && JointSet.CheckStep())
+                {
+                    StepDelay = true;
+                    JointSet.IncrementStepping(CurrentClockMode);
+                    AdvanceFrameIndex();
+                    LoadFrame(CurrentFrameIndex, true);
+                }
+            }
+            void UpdateSequenceClock()
+            {
+                CurrentClockTime += MySetting.MyValue() * (int)CurrentClockMode;
+                CurrentClockTime = CurrentClockTime < 0 ? 0 : CurrentClockTime > 1 ? 1 : CurrentClockTime;
+            }
+            bool CheckFrameTimer()
+            {
+                if (!Program.WithinTargetThreshold)
+                    return false;
+                if (CurrentClockMode == ClockMode.FOR && CurrentClockTime == 1)
+                    return true;
+                if (CurrentClockMode == ClockMode.REV && CurrentClockTime == 0)
+                    return true;
+                return false;
+            }
+            void AdvanceFrameIndex()
+            {
+                CurrentFrameIndex += (int)CurrentClockMode;
+                CurrentFrameIndex = CurrentFrameIndex < 0 ? Frames.Count - 1 : CurrentFrameIndex >= Frames.Count ? 0 : CurrentFrameIndex;
+            }
+            void UpdateStepDelay()
+            {
+                if (!StepDelay ||
+                    CurrentClockMode == ClockMode.PAUSE)
                     return;
 
-                LoadFrame(CurrentFrameIndex, forward, interrupt);
+                float triggerTime = CurrentClockMode != ClockMode.REV ? CurrentClockTime : 1 - CurrentClockTime;
+
+                if (triggerTime >= Program.StepThreshold.MyValue())
+                    StepDelay = false;
             }
-            void LoadFrame(int index, bool forward, bool interrupt)
+            void LoadFrame(int index, bool interrupt)
             {
                 if (JointSet == null)
                     return;
@@ -1904,18 +1942,18 @@ namespace IngameScript
                     Frames.Count == 0)
                     return;
 
+
                 CurrentFrame = GetKeyFrame(index);
-                CurrentClockTime = forward ? 0 : 1;
+                FrameLoadForward = CurrentClockMode != ClockMode.REV;
+                CurrentClockTime = FrameLoadForward ? 0 : 1;
 
                 foreach (JointFrame jFrame in CurrentFrame.Jframes)
                 {
                     if (jFrame.Joint == null)
                         continue;
 
-                    jFrame.Joint.LoadAnimationFrame(jFrame, forward, interrupt);
+                    jFrame.Joint.LoadAnimationFrame(jFrame, FrameLoadForward, interrupt);
                 }
-
-                bFrameLoadForward = forward;
             }
             void LerpFrame(float lerpTime)
             {
@@ -1986,7 +2024,7 @@ namespace IngameScript
                 }
             }
 
-            for (int i = LoadJointIndex; i < BlockBuffer.Count ; i++)
+            for (int i = LoadJointIndex; i < BlockBuffer.Count; i++)
             {
                 Echo($"Buffering:{i}");
                 LoadJointIndex = i;
@@ -2284,7 +2322,7 @@ namespace IngameScript
             List<string> stringList = new List<string>();
             stringList.Add("======Library======");
             Animation anim = null;
-            switch(CurrentGUILayer)
+            switch (CurrentGUILayer)
             {
                 case GUILayer.SEQUENCE:
                     anim = GetSelectedSequence();
@@ -2303,7 +2341,7 @@ namespace IngameScript
                 stringList.Add($"= {anim.MySetting.Name} : {anim.MySetting.MyValue()} =");
                 LineWrapper(stringList, anim.MySetting.Description, CharTotalCount);
             }
-                
+
             else
                 stringList.Add($"=================");
 
@@ -2352,7 +2390,7 @@ namespace IngameScript
                             for (int jFrameIndex = 0; jFrameIndex < seq.GetKeyFrame(kFrameIndex).Jframes.Count(); jFrameIndex++)
                             {
                                 JointFrame jFrame = seq.GetKeyFrame(kFrameIndex).GetJointFrame(jFrameIndex);
-                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList,$"{jFrame.Joint.Connection.CustomName}:{jFrame.MySetting.MyValue()}");
+                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList, $"{jFrame.Joint.Connection.CustomName}:{jFrame.MySetting.MyValue()}");
                             }
                         }
                     }
@@ -2422,9 +2460,7 @@ namespace IngameScript
 
             try
             {
-                stringList.Add($"Flying: {Flying} || Planeing: {Planeing}");
-                stringList.Add($"Left foot locked: {CurrentWalkSet.GetFoot(0).Locked}");
-                stringList.Add($"Right foot locked: {CurrentWalkSet.GetFoot(1).Locked}");
+                stringList.Add($"{(CurrentWalkSet == null ? "No legs!" : CurrentWalkSet.Locked ? "Walking..." : "Flying...")}");
             }
             catch
             {
@@ -2454,7 +2490,7 @@ namespace IngameScript
                     DisplayManagerBuilder.Append($"{InputLabels[i]} - {LibraryMenuInputs[i]}\n");
                 }
 
-            if(mode == GUIMode.OPTIONS)
+            if (mode == GUIMode.OPTIONS)
                 for (int i = 0; i < OptionMenuInputs.Length; i++)
                 {
                     DisplayManagerBuilder.Append($"{InputLabels[i]} - {OptionMenuInputs[i]}\n");
@@ -2491,10 +2527,7 @@ namespace IngameScript
 
         void OptionsMenuFunctions(int button)
         {
-            switch (button)
-            {
 
-            }
         }
         void ControlMenuFunctions(int button)
         {
@@ -2505,15 +2538,12 @@ namespace IngameScript
             switch (button)
             {
                 case 2:
-                    ReleaseTimer = ReleaseCount;
-                    Planeing = false;
-                    CurrentWalkSet.TogglePlaneing(Planeing);
-                    CurrentWalkSet.UnlockFeet();
+                    CurrentWalkSet.UnlockAllFeet();
                     break;
 
                 case 3:
-                    Planeing = !Planeing;
-                    CurrentWalkSet.TogglePlaneing(Planeing);
+                    Orientation.Adjust();
+                    CurrentWalkSet.TogglePlaneing(Orientation.MyState());
                     break;
 
                 case 4:
@@ -2526,6 +2556,7 @@ namespace IngameScript
 
                 case 6:
                     CurrentWalkSet.ZeroJointSet();
+                    CurrentWalk.ZeroSequence();
                     break;
             }
         }
@@ -2552,10 +2583,7 @@ namespace IngameScript
         }
         void InfoMenuFunctions(int button)
         {
-            switch (button)
-            {
 
-            }
         }
         void CreateMenuFunctions(int button)
         {
@@ -2598,7 +2626,7 @@ namespace IngameScript
             if (anim == null)
                 return;
 
-            switch(button)
+            switch (button)
             {
                 case 3:
                     anim.MySetting.Adjust(true);
@@ -2628,32 +2656,32 @@ namespace IngameScript
                     ForceSave();
             }
             else
-            switch (CurrentGUIMode)
-            {
-                case GUIMode.MAIN:
-                    MainMenuFunctions(button);
-                    break;
+                switch (CurrentGUIMode)
+                {
+                    case GUIMode.MAIN:
+                        MainMenuFunctions(button);
+                        break;
 
-                case GUIMode.INFO:
-                    InfoMenuFunctions(button);
-                    break;
+                    case GUIMode.INFO:
+                        InfoMenuFunctions(button);
+                        break;
 
-                case GUIMode.CREATE:
-                    CreateMenuFunctions(button);
-                    break;
+                    case GUIMode.CREATE:
+                        CreateMenuFunctions(button);
+                        break;
 
-                case GUIMode.EDIT:
-                    EditMenuFunctions(button);
-                    break;
+                    case GUIMode.EDIT:
+                        EditMenuFunctions(button);
+                        break;
 
-                case GUIMode.CONTROL:
-                    ControlMenuFunctions(button);
-                    break;
+                    case GUIMode.CONTROL:
+                        ControlMenuFunctions(button);
+                        break;
 
-                case GUIMode.OPTIONS:
-                    OptionsMenuFunctions(button);
-                    break;
-            }
+                    case GUIMode.OPTIONS:
+                        OptionsMenuFunctions(button);
+                        break;
+                }
             GUIUpdate();
         }
         void GUINavigation(GUINav dir)
@@ -2698,7 +2726,7 @@ namespace IngameScript
         }
         void CursorMove(bool up)
         {
-            switch(CurrentGUIMode)
+            switch (CurrentGUIMode)
             {
                 case GUIMode.CREATE:
                 case GUIMode.EDIT:
@@ -2712,7 +2740,7 @@ namespace IngameScript
         }
         void CursorAction(bool main)
         {
-            switch(CurrentGUIMode)
+            switch (CurrentGUIMode)
             {
                 case GUIMode.CREATE:
                 case GUIMode.EDIT:
@@ -2795,9 +2823,9 @@ namespace IngameScript
         {
             try
             {
-                StringBuilder myStringBuilder = new StringBuilder();
-                CockPitScreens[2].ReadText(myStringBuilder);
-                buffer = myStringBuilder.ToString();
+                InputReader.Clear();
+                GetCockpitSurface(Screen.INPUT).ReadText(InputReader);
+                buffer = InputReader.ToString();
                 if (buffer == "")
                     buffer = null;
 
@@ -2812,9 +2840,9 @@ namespace IngameScript
         {
             try
             {
-                StringBuilder myStringBuilder = new StringBuilder();
-                CockPitScreens[2].ReadText(myStringBuilder);
-                buffer = float.Parse(myStringBuilder.ToString());
+                InputReader.Clear();
+                GetCockpitSurface(Screen.INPUT).ReadText(InputReader);
+                buffer = float.Parse(InputReader.ToString());
                 return true;
             }
             catch
@@ -3010,23 +3038,6 @@ namespace IngameScript
                 return;
             }
         }
-        /*void ChangeSnappingValue()
-        {
-            float input = 0;
-            if (!UserInputFloat(ref input))
-                return;
-            SnappingValue.Change(input);
-        }*/
-        void IncrementLerpPoint(bool incr = true)
-        {
-            if (CurrentGUILayer != GUILayer.J_FRAME)
-                return;
-
-            JointFrame jFrame = GetSelectedJointFrame();
-
-            double newLerpPoint = incr ? jFrame.MySetting.MyValue() + SnappingValue.MyValue() : jFrame.MySetting.MyValue() - SnappingValue.MyValue();
-            jFrame.ChangeStatorLerpPoint((float)newLerpPoint);
-        }
 
         int Selected(GUILayer layer)
         {
@@ -3054,7 +3065,7 @@ namespace IngameScript
 
             if (CurrentGUIMode == GUIMode.CONTROL)
             {
-                    RotationBuffer.X = LookScalar * -Control.RotationIndicator.Y;
+                RotationBuffer.X = LookScalar * -Control.RotationIndicator.Y;
                 RotationBuffer.Y = LookScalar * -Control.RotationIndicator.X;
 
                 RotationBuffer.X = RotationBuffer.X < MouseSensitivity.MyValue() ? RotationBuffer.X : MouseSensitivity.MyValue();
@@ -3111,18 +3122,15 @@ namespace IngameScript
                 }
             }
         }
-        void WalkManager()
+        void WalkTargetManager()
         {
-            if (CurrentWalkSet == null)
+            if (CurrentWalkSet == null ||
+                CurrentWalk == null)
                 return;
 
-            if (Planeing)
-                Planeing = CurrentWalkSet.UpdatePlanars(RotationBuffer, TurnBuffer);
-
-            if (CurrentWalk == null)
-                return;
-
-            CurrentWalk.UpdateSequence(IgnoreFeet.MyState());
+            WithinTargetThreshold = CurrentWalkSet.UpdateJoints();
+            CurrentWalkSet.UpdatePlanars();
+            CurrentWalk.UpdateSequence();
         }
         void AnimationManager()
         {
@@ -3133,44 +3141,28 @@ namespace IngameScript
             foreach (Sequence seq in Animations)
                 seq.UpdateSequence();
         }
-        void PrimarySetManager()
+        void FeetManager()
         {
-            if (CurrentWalkSet == null ||
-                !StatorControl.MyState())
+            if (IgnoreFeet.MyState() ||
+                !StatorControl.MyState() ||
+                CurrentWalkSet == null)
                 return;
 
-            WithinTargetThreshold = true;
-
-            foreach (Joint joint in CurrentWalkSet.Joints)
+            if (CurrentWalkSet.UpdateFootLockStatus())
             {
-                if (!joint.UpdateJoint(StatorTarget.MyState()))
-                {
-                    //WithinTargetThreshold = false;
-                }
-
+                ToggleFlight(!CurrentWalkSet.Locked);
+                CurrentWalkSet.TogglePlaneing(Orientation.MyState());
+                GUIUpdate();
             }
-                
-            if (IgnoreFeet.MyState())
-                return;
-
-            Flying = !CurrentWalkSet.UpdateFootLockStatus();
-            ReleaseTimer -= 1;
-            ReleaseTimer = ReleaseTimer < 0 ? 0 : ReleaseTimer;
-
-            if (Flying && ReleaseTimer <= 0 &&
-                CurrentWalkSet.TouchDown() &&
-                CurrentWalkSet.UpdateFootLockStatus())
-            {
-                Planeing = true;
-                CurrentWalkSet.TogglePlaneing(Planeing);
-            }
-
-            foreach (IMyFunctionalBlock flightBlock in FlightGroup)
-                flightBlock.Enabled = Flying;
 
             foreach (Foot foot in CurrentWalkSet.Feet)
                 foreach (Joint toe in foot.Toes)
                     toe.UpdateJoint(StatorTarget.MyState());
+        }
+        void ToggleFlight(bool enable)
+        {
+            foreach (IMyFunctionalBlock flightBlock in FlightGroup)
+                flightBlock.Enabled = enable;
         }
         void DisplayManager()
         {
@@ -3179,11 +3171,11 @@ namespace IngameScript
             Echo($"MechStatus: {MechStatus(Screen.MECH_STATUS)}");
             Echo($"DebugStream: {DebugStream(Screen.DEBUG_STREAM)}");
         }
-        bool Cockpit(Screen screen, StringBuilder input, bool append = false)
+        bool CockpitWrite(Screen screen, StringBuilder input, bool append = false)
         {
-            return Cockpit(screen, input.ToString(), append);
+            return CockpitWrite(screen, input.ToString(), append);
         }
-        bool Cockpit(Screen screen, string input, bool append = false)
+        bool CockpitWrite(Screen screen, string input, bool append = false)
         {
             int index = (int)screen;
             if (index >= CockPitScreens.Length ||
@@ -3218,12 +3210,13 @@ namespace IngameScript
         {
             return Static("", false);
         }
+        
         #endregion
 
         #region DISPLAY
         bool GUIstatus(Screen gui, Screen buttons)
         {
-            return Cockpit(gui, SplashBuilder, false) && Cockpit(buttons, ButtonBuilder, false);
+            return CockpitWrite(gui, SplashBuilder, false) && CockpitWrite(buttons, ButtonBuilder, false);
         }
         bool Diagnostics(Screen panel)
         {
@@ -3242,8 +3235,7 @@ namespace IngameScript
                 DisplayManagerBuilder.Append($"P_Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n");
                 DisplayManagerBuilder.Append($"T_Corrections:\n{T.X:0.###}:{T.Y:0.###}:{T.Z:0.###}\n");
                 DisplayManagerBuilder.Append($"Finals:\n{F.GetPlanar(0).ActiveTarget:0.###}\n{F.GetPlanar(1).ActiveTarget:0.###}\n{F.GetPlanar(2).ActiveTarget:0.###}\n");
-                DisplayManagerBuilder.Append($"Stepping: {CurrentWalkSet.Stepping}\n");
-                DisplayManagerBuilder.Append($"Releasing: {CurrentWalkSet.Releasing}\n");
+                DisplayManagerBuilder.Append($"LockedIndex: {CurrentWalkSet.LockedIndex}\n");
 
                 for (int i = 0; i < CurrentWalkSet.Feet.Count; i++)
                 {
@@ -3263,11 +3255,12 @@ namespace IngameScript
             {
                 DisplayManagerBuilder.Append(
                      "Mech Status:\n\n" +
-                    $"SampleWalkClockState: {CurrentWalk.CurrentClockMode}\n" +
-                    $"CurrentWalkClockTime: {CurrentWalk.CurrentClockTime}\n" +
-                    $"CurrentWalkFrameIndex: {CurrentWalk.CurrentFrameIndex}\n" +
-                    $"Planeing: {Planeing}\n" +
-                    $"Flying: {Flying}");
+                    $"CurrentWalk ClockState: {CurrentWalk.CurrentClockMode}\n" +
+                    $"CurrentWalk ClockTime: {CurrentWalk.CurrentClockTime}\n" +
+                    $"CurrentWalk FrameIndex: {CurrentWalk.CurrentFrameIndex}\n" +
+                    $"CurrentWalk StepDelay: {CurrentWalk.StepDelay}\n" +
+                    $"Planeing: {Orientation.MyState()}\n" +
+                    $"LockedFootIndex: {CurrentWalkSet.LockedIndex}\n");
             }
 
             catch
@@ -3302,13 +3295,12 @@ namespace IngameScript
         {
             try
             {
-                //Runtime.UpdateFrequency = PROG_FREQ;
-
                 DebugBinStream = new StringBuilder();
                 DebugBinStatic = new StringBuilder();
                 DisplayManagerBuilder = new StringBuilder();
                 ButtonBuilder = new StringBuilder();
                 SplashBuilder = new StringBuilder();
+                InputReader = new StringBuilder();
                 SaveData = new StringBuilder();
 
                 SetupSettings();
@@ -3321,25 +3313,19 @@ namespace IngameScript
                 if (panelGroup != null)
                     panelGroup.GetBlocksOfType(panels);
 
-                Echo("yo");
-
                 for (int i = 0; i < CockPitScreens.Length || i < panels.Count; i++)
                 {
-                    Echo($"yo{i}");
-
                     if (Control != null &&
                         i < 3)
                     {
                         try
                         {
-                            Echo("attempting building cockpit screen");
                             CockPitScreens[i] = Control.GetSurface(i);
                             CockPitScreens[i].ContentType = ContentType.TEXT_AND_IMAGE;
                             CockPitScreens[i].WriteText("");
                         }
                         catch
                         {
-                            Echo("failed building cockpit screen");
                             //Static("Incorrect CockpitType!\n" +
                             //    "MechStatus and UserInput unavailable...\n");
                         }
@@ -3347,7 +3333,6 @@ namespace IngameScript
 
                     if (i < panels.Count)
                     {
-                        Echo("attempting building panel screen");
                         panels[i].ContentType = ContentType.TEXT_AND_IMAGE;
                         panels[i].WriteText("");
                         DebugScreens.Add(panels[i]);
@@ -3418,24 +3403,21 @@ namespace IngameScript
                     break;
 
                 default:
-                    Echo("Default arg");
                     if (!argument.Contains("BUTTON:"))
                         break;
-                    Echo("BUTTON arg");
+
                     string code = argument.Split(':')[1];
+
                     int button = 0;
                     if (int.TryParse(code, out button))
-                    {
-                        Echo($"BUTTON code: {button}");
                         ButtonPress(button);
-                    }
 
                     break;
             }
 
             ControlInput();
-            WalkManager();
-            PrimarySetManager();
+            FeetManager();
+            WalkTargetManager();
             DisplayManager();
 
             DebugBinStream.Clear(); // MUST HAPPEN!
@@ -3582,8 +3564,9 @@ namespace IngameScript
             Static("Starting up...\n");
 
             CurrentWalkSet = GetJointSet(0);
-            Planeing = CurrentWalkSet.InitFootStatus();
-            CurrentWalkSet.TogglePlaneing(Planeing);
+            CurrentWalkSet.TogglePlaneing(Orientation.MyState());
+            CurrentWalkSet.InitFootStatus();
+            ToggleFlight(!CurrentWalkSet.Locked);
 
             if (CurrentWalkSet.Sequences == null ||
                 CurrentWalkSet.Sequences.Count < 1)
@@ -3771,6 +3754,16 @@ namespace IngameScript
         #endregion
 
         #region GETTERS
+        IMyTextSurface GetLCDsurface(Screen screen)
+        {
+            try { return DebugScreens[(int)screen]; }
+            catch { return null; }
+        }
+        IMyTextSurface GetCockpitSurface(Screen screen)
+        {
+            try { return CockPitScreens[(int)screen]; }
+            catch { return null; }
+        }
         JointSet GetJointSet(int index)
         {
             if (index < 0 || index > JsetBin.Count)
@@ -3787,7 +3780,7 @@ namespace IngameScript
         }
         Animation GetSelectedAnim()
         {
-            switch(CurrentGUILayer)
+            switch (CurrentGUILayer)
             {
                 case GUILayer.SEQUENCE:
                     return GetSelectedSequence();
