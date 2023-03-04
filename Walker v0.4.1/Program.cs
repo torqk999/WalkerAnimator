@@ -27,8 +27,8 @@ namespace IngameScript
      * Piston API!!! (can't avoid it much longer Sam...) || LOW PRIORITY
      * Joint Syncing (for piston/redundant linking) || LOW PRIORITY
      * Setup distribution (limit block constructions, refer to grid manager) || BUILT
-     * Force differentials? (Assist servo actuation, perhaps through lerp itself?) || BUILT (early)
-     * Custom Frame Lengths (Variable lerp time for the animation clock) || Pending...
+     * Force differentials? (Assist servo actuation, perhaps through lerp itself?) || BUILT (stable)
+     * Custom Frame Lengths (Variable lerp time for the animation clock) || BUILT
      */
     #endregion
 
@@ -105,13 +105,35 @@ namespace IngameScript
     {
 
         #region CONSTS
+
+        // need migrating //
+        enum Screen
+        {
+            // LCD's
+            DIAGNOSTICS = 0,
+            MECH_STATUS = 2,
+            DEBUG_TEST = 3,
+            DEBUG_STREAM = 4,
+            DEBUG_STATIC = 5,
+
+            // Cockpit
+            INPUT = 0,
+            SPLASH = 1,
+            CONTROLS = 2
+        }
+
+        bool CockpitMenus = true;
+        bool CapLines = true;
+        bool Snapping = true;
+        ////////////////////
+
         static UpdateFrequency DEF_FREQ = UpdateFrequency.Update1;
         const string LCDgroupName = "LCDS";
         const string FlightGroupName = "FLIGHT";
         const string FootSignature = "[FOOT]";
         const string ToeSignature = "[TOE]";
         const string TurnSignature = "[TURN]";
-        //const string Digits = "0.###";
+        const string Digits = "0.###";
 
         const string OptionsTag = "&";
         const string SettingsTag = "#";
@@ -126,8 +148,6 @@ namespace IngameScript
         const string MagnetTag = "M";
         const string GripTag = "G";
 
-        const float VelThreshLimit = .02f;
-        const float DisThreshLimit = 3f;
         const float DEG2VEL = .5f;
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
@@ -209,11 +229,6 @@ namespace IngameScript
         bool JointsBuilt = false;
         bool WithinTargetThreshold = false;
 
-        // need migrating //
-        bool CapLines = true;
-        bool Snapping = true;
-        ////////////////////
-
         List<Option> Options = new List<Option>();
         List<Toggle> Toggles;
         List<Setting> Settings;
@@ -228,34 +243,11 @@ namespace IngameScript
         Toggle Descriptions;
 
         Setting StepThreshold;
+        Setting FrameThreshold;
         Setting MaxAcceleration;
         Setting MaxSpeed;
         Setting MouseSensitivity;
         Setting SnappingIncrement;
-
-        
-
-        void LoadSettings(string input)
-        {
-            string[] data = input.Split(':');
-            for (int i = 0; i < Settings.Count; i++)
-            {
-                try { Settings[i].Change(float.Parse(data[i + 1])); }
-                catch { }
-            }
-
-        }
-        
-        
-        void LoadToggles(string input)
-        {
-            string[] data = input.Split(':');
-            for (int i = 0; i < Toggles.Count; i++)
-            {
-                try { Toggles[i].Change(bool.Parse(data[i + 1])); }
-                catch { }
-            }
-        }
 
         Vector3 RotationBuffer;
         float TurnBuffer = 0;
@@ -305,20 +297,6 @@ namespace IngameScript
             DOWN,
             BACKWARD,
             FORWARD
-        }
-        enum Screen
-        {
-            // LCD's
-            DIAGNOSTICS = 0,
-            MECH_STATUS = 2,
-            DEBUG_TEST = 3,
-            DEBUG_STREAM = 4,
-            DEBUG_STATIC = 5,
-
-            // Cockpit
-            INPUT = 0,
-            SPLASH = 1,
-            CONTROLS = 2
         }
         #endregion
 
@@ -544,7 +522,6 @@ namespace IngameScript
         {
             public int FootIndex;
             public int GripDirection;
-            //public float MaxForce;
             public IMyMechanicalConnectionBlock Connection;
 
             // Instance
@@ -553,21 +530,19 @@ namespace IngameScript
             public bool Gripping = false;
             public bool TargetThreshold = false;
 
-            // Raw Target Values
+            // Ze Maths
+            public int CorrectionDir;
+
             public double PlaneCorrection;
             public double AnimTarget;
             public double ActiveTarget;
-
-            // Ze Maths
-            public int CorrectionDir;
             public double CorrectionMag;
-            public double StatorVelocity;
+            public double TargetVelocity;
+            public double OldVelocity;
             public double LiteralVelocity; // Not used atm? but it works! : D
-            public Vector3 PlanarDots;
+            public double LastPosition;
 
-            // SlerpAlerpin
-            double OldVelocity;
-            double LastPosition;
+            public Vector3 PlanarDots;
 
             public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data) : base(data.Root)
             {
@@ -630,20 +605,13 @@ namespace IngameScript
             }
             public void LoadJointFrames(JointFrame zero, JointFrame one, bool forward, bool interrupt)
             {
-                LerpPoints[0] = interrupt && forward ? CurrentConnectionPosition() : zero.MySetting.MyValue();
-                LerpPoints[1] = interrupt && !forward ? CurrentConnectionPosition() : one.MySetting.MyValue();
-
-                /*int a = forward ? 0 : 1;
-                int b = forward ? 1 : 0;
-
-                LerpPoints[a] = interrupt ? ReturnCurrentStatorPosition() : LerpPoints[b];
-                LerpPoints[b] = frames.MySetting.MyValue();*/
+                LerpPoints[0] = interrupt && forward ? CurrentPosition() : zero == null ? 0 : zero.MySetting.MyValue();
+                LerpPoints[1] = interrupt && !forward ? CurrentPosition() : one == null ? 0 : one.MySetting.MyValue();
             }
             public void OverwriteAnimTarget(double value)
             {
                 AnimTarget = value;
             }
-
             public void UpdateJoint(bool activeTargetTracking)
             {
                 if (!IsAlive())
@@ -674,7 +642,7 @@ namespace IngameScript
             }
             void UpdateLiteralVelocity()
             {
-                double currentPosition = CurrentConnectionPosition();
+                double currentPosition = CurrentPosition();
                 LiteralVelocity = ((currentPosition - LastPosition) / 360) / Program.Runtime.TimeSinceLastRun.TotalMinutes;
                 LastPosition = currentPosition;
             }
@@ -682,35 +650,26 @@ namespace IngameScript
             {
                 if (active)
                 {
-                    OldVelocity = StatorVelocity;
+                    OldVelocity = TargetVelocity;
                     if (TAG == "G")
                     {
-                        StatorVelocity = Program.MaxSpeed.MyValue() * (Gripping ? -1 : 1); // Needs changing!
+                        TargetVelocity = Program.MaxSpeed.MyValue() * (Gripping ? -1 : 1); // Needs changing!
                     }
                     else
                     {
-                        double scale = CorrectionMag * DEG2VEL;
-                        StatorVelocity = CorrectionDir * scale;
-
-                        if (VelThreshold(scale))
-                            StatorVelocity = 0;
-
-                        StatorVelocity = (Math.Abs(StatorVelocity - OldVelocity) > Program.MaxAcceleration.MyValue()) ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(StatorVelocity - OldVelocity)) : StatorVelocity;
-                        StatorVelocity = (Math.Abs(StatorVelocity) > Program.MaxSpeed.MyValue()) ? Program.MaxSpeed.MyValue() * CorrectionDir : StatorVelocity;
+                        TargetVelocity = CorrectionDir * CorrectionMag * DEG2VEL;
+                        TargetVelocity = (Math.Abs(TargetVelocity - OldVelocity) > Program.MaxAcceleration.MyValue()) ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(TargetVelocity - OldVelocity)) : TargetVelocity;
+                        TargetVelocity = (Math.Abs(TargetVelocity) > Program.MaxSpeed.MyValue()) ? Program.MaxSpeed.MyValue() * CorrectionDir : TargetVelocity;
                     }
                 }
                 else
-                    StatorVelocity = 0;
+                    TargetVelocity = 0;
 
                 UpdateConnection();
             }
-            public bool VelThreshold(double scale)
-            {
-                return scale < VelThreshLimit;
-            }
             public bool DisThreshold()
             {
-                return CorrectionMag < DisThreshLimit;
+                return CorrectionMag < Program.FrameThreshold.MyValue();
             }
             public void UpdatePlanarDot(MatrixD plane)
             {
@@ -718,7 +677,7 @@ namespace IngameScript
                 PlanarDots.Y = Vector3.Dot(ReturnRotationAxis(), plane.Up);
                 PlanarDots.Z = Vector3.Dot(ReturnRotationAxis(), plane.Backward);
             }
-            public virtual double CurrentConnectionPosition()
+            public virtual double CurrentPosition()
             {
                 return -100;
             }
@@ -761,7 +720,7 @@ namespace IngameScript
             }
             public void UpdateConnection()
             {
-                Connection.SetValueFloat("Velocity", (float)StatorVelocity);
+                Connection.SetValueFloat("Velocity", (float)TargetVelocity);
             }
         }
         class Piston : Joint
@@ -778,7 +737,7 @@ namespace IngameScript
                 PistonBase = pistonBase;
             }
 
-            public override double CurrentConnectionPosition()
+            public override double CurrentPosition()
             {
                 return Reference.Angle * RAD2DEG;
             }
@@ -827,7 +786,7 @@ namespace IngameScript
             {
                 return Stator.WorldMatrix.Down;
             }
-            public override double CurrentConnectionPosition()
+            public override double CurrentPosition()
             {
                 return Stator.Angle * RAD2DEG;
             }
@@ -887,7 +846,7 @@ namespace IngameScript
             {
                 return Stator.WorldMatrix.Up;
             }
-            public override double CurrentConnectionPosition()
+            public override double CurrentPosition()
             {
                 return Stator.Angle * RAD2DEG;
             }
@@ -1039,7 +998,7 @@ namespace IngameScript
                 if (!Locked && ReleaseTimer <= 0) // TouchDown
                     NewLockCandidate();
 
-                if (changed)
+                //if (changed)
                     UnlockOtherFeet();
 
                 return changed;
@@ -1475,7 +1434,7 @@ namespace IngameScript
             {
                 TAG = JframeTag;
                 Joint = joint;
-                GenerateSetting((float)Joint.CurrentConnectionPosition());
+                GenerateSetting((float)Joint.CurrentPosition());
                 if (snapping)
                 {
                     MySetting.Change((int)MySetting.MyValue());
@@ -1938,7 +1897,7 @@ namespace IngameScript
         string[] LibraryStringBuilder()
         {
             List<string> stringList = new List<string>();
-            stringList.Add("======Library======");
+            stringList.Add($"= Library = [StatorTarget:{StatorTarget.MyState()}]=");
             Animation anim = null;
             switch (CurrentGUILayer)
             {
@@ -2221,9 +2180,11 @@ namespace IngameScript
             return Static("", false);
         }
 
-        bool Cockpit(Screen gui, Screen buttons)
+        bool MenuSystem(Screen gui, Screen buttons)
         {
-            return CockpitWrite(gui, SplashBuilder, false) && CockpitWrite(buttons, ButtonBuilder, false);
+            if (CockpitMenus)
+                return CockpitWrite(gui, SplashBuilder, false) && CockpitWrite(buttons, ButtonBuilder, false);
+            return Write(gui, SplashBuilder, false) && Write(buttons, ButtonBuilder, false);
         }
         bool Diagnostics(Screen panel)
         {
@@ -2401,6 +2362,9 @@ namespace IngameScript
         }
         void EditValue(Animation anim)
         {
+            if (anim == null)
+                return;
+
             float value;
             if (!UserInputFloat(out value))
                 return;
@@ -2565,7 +2529,7 @@ namespace IngameScript
             CurrentGUILayer = (GUILayer)layer;
             LibrarySelection(up ? -1 : 1);
         }
-        void ChangeOption(bool up)
+        void AdjustOption(bool up)
         {
             Options[SelectedOptionIndex].Adjust(up);
         }
@@ -2784,17 +2748,17 @@ namespace IngameScript
             }
 
             Animation anim = GetSelectedAnim();
-            if (anim == null)
-                return;
 
             switch (button)
             {
                 case 3:
-                    anim.MySetting.Adjust(true);
+                    if (anim != null)
+                        anim.MySetting.Adjust(true);
                     break;
 
                 case 4:
-                    anim.MySetting.Adjust(false);
+                    if (anim != null)
+                        anim.MySetting.Adjust(false);
                     break;
 
                 case 5:
@@ -2834,7 +2798,7 @@ namespace IngameScript
                     break;
 
                 case GUIMode.OPTIONS:
-                    ChangeOption(main);
+                    AdjustOption(main);
                     break;
             }
         }
@@ -2979,7 +2943,7 @@ namespace IngameScript
         }
         void DisplayManager()
         {
-            Echo($"CockpitScreens: {Cockpit(Screen.SPLASH, Screen.CONTROLS)}");
+            Echo($"CockpitScreens: {MenuSystem(Screen.SPLASH, Screen.CONTROLS)}");
             Echo($"Diagnostics: {Diagnostics(Screen.DIAGNOSTICS)}");
             Echo($"MechStatus: {MechStatus(Screen.MECH_STATUS)}");
             Echo($"DebugStream: {DebugStream(Screen.DEBUG_STREAM)}");
@@ -3043,6 +3007,9 @@ namespace IngameScript
             StepThreshold = new Setting(this, "Step Threshold", "How long into a keyframe (%) the mech must walk for before a foot can re-attach again.",
                 0.6f, 0.05f);
 
+            FrameThreshold = new Setting(this, "Frame Threshold", "The maxium allowed tolerance for joint deviation between clock-triggered frame loads.",
+                3f, 0.1f, 5f, 0.5f);
+
             MaxAcceleration = new Setting(this, "Max Stator Acceleration", "Fastest rate (RPM) at which the joint stators will change their velocity per operation tick.",
                 0.3f, 0.1f, 1f);
 
@@ -3058,6 +3025,7 @@ namespace IngameScript
             Settings = new List<Setting>
             {
                 StepThreshold,
+                FrameThreshold,
                 MaxAcceleration,
                 MaxSpeed,
                 MouseSensitivity,
@@ -3448,6 +3416,25 @@ namespace IngameScript
 
             Startup();
             return 1;
+        }
+        void LoadSettings(string input)
+        {
+            string[] data = input.Split(':');
+            for (int i = 0; i < Settings.Count; i++)
+            {
+                try { Settings[i].Change(float.Parse(data[i + 1])); }
+                catch { }
+            }
+
+        }
+        void LoadToggles(string input)
+        {
+            string[] data = input.Split(':');
+            for (int i = 0; i < Toggles.Count; i++)
+            {
+                try { Toggles[i].Change(bool.Parse(data[i + 1])); }
+                catch { }
+            }
         }
         bool LoadJoints()
         {
