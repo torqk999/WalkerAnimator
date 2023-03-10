@@ -109,17 +109,14 @@ namespace IngameScript
         // need migrating //
         enum Screen
         {
-            // LCD's
             DIAGNOSTICS = 0,
-            MECH_STATUS = 2,
-            DEBUG_TEST = 3,
-            DEBUG_STREAM = 4,
-            DEBUG_STATIC = 5,
-
-            // Cockpit
-            INPUT = 0,
-            SPLASH = 1,
-            CONTROLS = 2
+            MECH_STATUS = 1,
+            DEBUG_TEST = 2,
+            DEBUG_STREAM = 3,
+            DEBUG_STATIC = 4,
+            INPUT = 5,
+            SPLASH = 6,
+            CONTROLS = 7
         }
 
         bool CockpitMenus = true;
@@ -247,7 +244,7 @@ namespace IngameScript
         Setting MaxAcceleration;
         Setting MaxSpeed;
         Setting MouseSensitivity;
-        Setting SnappingIncrement;
+        Setting SnappingIncrement; // Remove!
 
         Vector3 RotationBuffer;
         float TurnBuffer = 0;
@@ -333,7 +330,7 @@ namespace IngameScript
                 GripDirection = gripDirection;
             }
         }
-
+        // , IncrMax, IncrMin, Accelerant;
         class Option
         {
             public string Name;
@@ -386,16 +383,15 @@ namespace IngameScript
         class Setting : Option
         {
             float
-                Value,
-                Increment,
-                Max, Min;
+                Value, ValueMax, ValueMin,
+                Increment;
 
             public Setting(Program prog, string name, string describe, float init, float increment, float max = 1, float min = 0) : base(prog, name, describe)
             {
                 Value = init;
                 Increment = increment;
-                Max = max;
-                Min = min;
+                ValueMax = max;
+                ValueMin = min;
                 Clamp();
             }
 
@@ -421,9 +417,7 @@ namespace IngameScript
 
             void Clamp()
             {
-                Prog.Static($"Clamping:{Name}\nMin/Max:{Min}/{Max}\nBeforeValue:{Value}\n");
-                Value = Value < Min ? Min : Value > Max ? Max : Value;
-                Prog.Static($"AfterValue:{Value}\n");
+                Value = Value < ValueMin ? ValueMin : Value > ValueMax ? ValueMax : Value;
             }
         }
 
@@ -1499,8 +1493,6 @@ namespace IngameScript
             public ClockMode RisidualClockMode = ClockMode.FOR;
             public ClockMode CurrentClockMode = ClockMode.PAUSE;
             public float CurrentClockTime = 0;
-            //public int CurrentFrameIndex = 0;
-            //public bool FrameLoadForward;
             public bool StepDelay;
 
             public Sequence(RootData root, JointSet set = null) : base(root)
@@ -1624,15 +1616,16 @@ namespace IngameScript
 
             void UpdateTriggers()
             {
-                UpdateSequenceClock();
+                if (Program.WithinTargetThreshold)
+                    UpdateSequenceClock();
+
                 if (CheckFrameTimer())
-                {
                     LoadKeyFrames(false);
-                }
 
                 UpdateStepDelay();
                 if (!Program.IgnoreFeet.MyState() && !StepDelay && JointSet.CheckStep())
                 {
+
                     StepDelay = true;
                     JointSet.IncrementStepping(CurrentClockMode);
                     LoadKeyFrames(true);
@@ -1645,8 +1638,8 @@ namespace IngameScript
             }
             void UpdateStepDelay()
             {
-                if (!StepDelay ||
-                    CurrentClockMode == ClockMode.PAUSE)
+                if (CurrentClockMode == ClockMode.PAUSE ||
+                    !StepDelay)
                     return;
 
                 float triggerTime = CurrentClockMode != ClockMode.REV ? CurrentClockTime : 1 - CurrentClockTime;
@@ -1667,8 +1660,8 @@ namespace IngameScript
 
             bool CheckFrameTimer()
             {
-                if (!Program.WithinTargetThreshold)
-                    return false;
+                //if (!Program.WithinTargetThreshold)
+                    //return false;
                 if (CurrentClockMode == ClockMode.FOR && CurrentClockTime == 1)
                     return true;
                 if (CurrentClockMode == ClockMode.REV && CurrentClockTime == 0)
@@ -1724,8 +1717,7 @@ namespace IngameScript
         #region GUI
 
             #region GUI RESOURCES
-        IMyTextSurface[] CockPitScreens = new IMyTextSurface[3];
-        List<IMyTextPanel> DebugScreens = new List<IMyTextPanel>();
+        List<IMyTextSurface> Screens = new List<IMyTextSurface>();
         StringBuilder DebugBinStream = new StringBuilder();
         StringBuilder DebugBinStatic = new StringBuilder();
         StringBuilder DisplayManagerBuilder = new StringBuilder();
@@ -2142,26 +2134,13 @@ namespace IngameScript
         {
             return DebugBinStatic.Length + append.Length > StaticDebugCharCap;
         }
-        bool CockpitWrite(Screen screen, StringBuilder input, bool append = false)
-        {
-            return CockpitWrite(screen, input.ToString(), append);
-        }
-        bool CockpitWrite(Screen screen, string input, bool append = false)
-        {
-            IMyTextSurface surface = GetCockpitSurface(screen);
-
-            if (surface != null)
-                surface.WriteText(input, append);
-            
-            return surface != null;
-        }
         bool Write(Screen screen, StringBuilder input, bool append = true)
         {
             return Write(screen, input.ToString(), append);
         }
         bool Write(Screen screen, string input, bool append = true)
         {
-            IMyTextSurface surface = GetLCDsurface(screen);
+            IMyTextSurface surface = GetSurface(screen);
 
             if (surface != null)
                 surface.WriteText(input, append);
@@ -2183,7 +2162,7 @@ namespace IngameScript
         bool MenuSystem(Screen gui, Screen buttons)
         {
             if (CockpitMenus)
-                return CockpitWrite(gui, SplashBuilder, false) && CockpitWrite(buttons, ButtonBuilder, false);
+                return Write(gui, SplashBuilder, false) && Write(buttons, ButtonBuilder, false);
             return Write(gui, SplashBuilder, false) && Write(buttons, ButtonBuilder, false);
         }
         bool Diagnostics(Screen panel)
@@ -2605,7 +2584,7 @@ namespace IngameScript
             try
             {
                 InputReader.Clear();
-                GetCockpitSurface(Screen.INPUT).ReadText(InputReader);
+                GetSurface(Screen.INPUT).ReadText(InputReader);
                 buffer = InputReader.ToString();
                 if (buffer == "")
                     buffer = null;
@@ -2622,7 +2601,7 @@ namespace IngameScript
             try
             {
                 InputReader.Clear();
-                GetCockpitSurface(Screen.INPUT).ReadText(InputReader);
+                GetSurface(Screen.INPUT).ReadText(InputReader);
                 buffer = float.Parse(InputReader.ToString());
                 return true;
             }
@@ -2974,31 +2953,17 @@ namespace IngameScript
         void SetupScreens()
         {
             IMyBlockGroup panelGroup = GridTerminalSystem.GetBlockGroupWithName(LCDgroupName);
+            List<IMyTextSurface> buffer = new List<IMyTextSurface>();
             if (panelGroup != null)
-                panelGroup.GetBlocksOfType(DebugScreens);
+                panelGroup.GetBlocksOfType(buffer);
+            Screens.AddRange(buffer);
 
-            for (int i = 0; i < CockPitScreens.Length || i < DebugScreens.Count; i++)
+            for (int i = 0; i < Screens.Count; i++)
             {
-                if (Control != null &&
-                    i < CockPitScreens.Length)
+                if (i < Screens.Count)
                 {
-                    try
-                    {
-                        CockPitScreens[i] = Control.GetSurface(i);
-                        CockPitScreens[i].ContentType = ContentType.TEXT_AND_IMAGE;
-                        CockPitScreens[i].WriteText("");
-                    }
-                    catch
-                    {
-                        //Static("Incorrect CockpitType!\n" +
-                        //    "MechStatus and UserInput unavailable...\n");
-                    }
-                }
-
-                if (i < DebugScreens.Count)
-                {
-                    DebugScreens[i].ContentType = ContentType.TEXT_AND_IMAGE;
-                    DebugScreens[i].WriteText("");
+                    Screens[i].ContentType = ContentType.TEXT_AND_IMAGE;
+                    Screens[i].WriteText("");
                 }
             }
         }
@@ -3008,7 +2973,7 @@ namespace IngameScript
                 0.6f, 0.05f);
 
             FrameThreshold = new Setting(this, "Frame Threshold", "The maxium allowed tolerance for joint deviation between clock-triggered frame loads.",
-                3f, 0.1f, 5f, 0.5f);
+                10f, 0.1f, 20f, 0.5f);
 
             MaxAcceleration = new Setting(this, "Max Stator Acceleration", "Fastest rate (RPM) at which the joint stators will change their velocity per operation tick.",
                 0.3f, 0.1f, 1f);
@@ -3068,12 +3033,16 @@ namespace IngameScript
 
             group.GetBlocksOfType(FlightGroup);
         }
-        void AssignController()
+        void SetupController()
         {
             List<IMyCockpit> cockpits = new List<IMyCockpit>();
             GridTerminalSystem.GetBlocksOfType(cockpits);
-            if (cockpits.Count > 0)
-                Control = cockpits[0];
+            if (cockpits.Count < 1)
+                return;
+
+            Control = cockpits[0];
+            for (int i = 0; i < Control.SurfaceCount; i++)
+                Screens.Add(Control.GetSurface(i));
         }
         #endregion
 
@@ -3083,8 +3052,8 @@ namespace IngameScript
             try
             {
                 AssignFlightGroup();
-                AssignController();
 
+                SetupController();
                 SetupScreens();
                 SetupSettings();
                 SetupToggles();
@@ -3748,14 +3717,9 @@ namespace IngameScript
         #endregion
 
         #region GETTERS
-        IMyTextSurface GetLCDsurface(Screen screen)
+        IMyTextSurface GetSurface(Screen screen)
         {
-            try { return DebugScreens[(int)screen]; }
-            catch { return null; }
-        }
-        IMyTextSurface GetCockpitSurface(Screen screen)
-        {
-            try { return CockPitScreens[(int)screen]; }
+            try { return Screens[(int)screen]; }
             catch { return null; }
         }
         List<IMyTerminalBlock> GetBlocks(string groupName)
