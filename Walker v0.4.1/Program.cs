@@ -109,14 +109,15 @@ namespace IngameScript
         // need migrating //
         enum Screen
         {
-            DIAGNOSTICS = 0,
-            MECH_STATUS = 1,
-            DEBUG_TEST = 2,
-            DEBUG_STREAM = 3,
-            DEBUG_STATIC = 4,
-            INPUT = 5,
-            SPLASH = 6,
-            CONTROLS = 7
+            INPUT = 0,
+            SPLASH = 1,
+            CONTROLS = 2,
+
+            DIAGNOSTICS = 5,
+            MECH_STATUS = 8,
+            DEBUG_TEST = 7,
+            DEBUG_STREAM = 6,
+            DEBUG_STATIC = 9,
         }
 
         bool CockpitMenus = true;
@@ -144,8 +145,7 @@ namespace IngameScript
         const string PlaneTag = "P";
         const string MagnetTag = "M";
         const string GripTag = "G";
-
-        const float DEG2VEL = .5f;
+        
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
 
@@ -168,6 +168,8 @@ namespace IngameScript
         const int DataTransferCap = 20;
         const int StaticDebugCharCap = 10000;
 
+        const double MIN_VEL = .1;
+        const double DEG2VEL = .5;
         const double RAD2DEG = 180 / Math.PI;
         const double SAFETY = Math.PI / 4;
         #endregion
@@ -516,6 +518,7 @@ namespace IngameScript
         {
             public int FootIndex;
             public int GripDirection;
+            public bool LargeGrid;
             public IMyMechanicalConnectionBlock Connection;
 
             // Instance
@@ -541,6 +544,7 @@ namespace IngameScript
             public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data) : base(data.Root)
             {
                 StaticDlog("Joint Constructor:");
+                LargeGrid = mechBlock.BlockDefinition.ToString().Contains("Large");
                 Connection = mechBlock;
                 Connection.Enabled = true;
                 FootIndex = data.FootIndex;
@@ -551,6 +555,7 @@ namespace IngameScript
 
             public Joint(Program program, IMyMechanicalConnectionBlock mechBlock) : base(/*mechBlock.CustomData,*/ program)
             {
+                LargeGrid = mechBlock.BlockDefinition.ToString().Contains("Large");
                 Connection = mechBlock;
                 Connection.Enabled = true;
                 SetForce(true);
@@ -610,7 +615,7 @@ namespace IngameScript
             {
                 if (!IsAlive())
                 {
-                    TargetThreshold = true; // Do not interrupt rest of joints
+                    TargetThreshold = true;
                     return;
                 }
 
@@ -651,9 +656,10 @@ namespace IngameScript
                     }
                     else
                     {
-                        TargetVelocity = CorrectionDir * CorrectionMag * DEG2VEL;
-                        TargetVelocity = (Math.Abs(TargetVelocity - OldVelocity) > Program.MaxAcceleration.MyValue()) ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(TargetVelocity - OldVelocity)) : TargetVelocity;
-                        TargetVelocity = (Math.Abs(TargetVelocity) > Program.MaxSpeed.MyValue()) ? Program.MaxSpeed.MyValue() * CorrectionDir : TargetVelocity;
+                        TargetVelocity = CorrectionDir * DEG2VEL * (CorrectionMag);
+                        TargetVelocity = Math.Abs(TargetVelocity - OldVelocity) > Program.MaxAcceleration.MyValue() ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(TargetVelocity - OldVelocity)) : TargetVelocity;
+                        TargetVelocity = Math.Abs(TargetVelocity) > Program.MaxSpeed.MyValue() ? Program.MaxSpeed.MyValue() * CorrectionDir : TargetVelocity;
+                        TargetVelocity = Math.Abs(TargetVelocity) > MIN_VEL ? TargetVelocity : 0 ;
                     }
                 }
                 else
@@ -778,7 +784,7 @@ namespace IngameScript
 
             public override Vector3 ReturnRotationAxis()
             {
-                return Stator.WorldMatrix.Down;
+                return LargeGrid ? Stator.WorldMatrix.Up : Stator.WorldMatrix.Down;
             }
             public override double CurrentPosition()
             {
@@ -838,7 +844,7 @@ namespace IngameScript
             }
             public override Vector3 ReturnRotationAxis()
             {
-                return Stator.WorldMatrix.Up;
+                return LargeGrid ? Stator.WorldMatrix.Down : Stator.WorldMatrix.Up;
             }
             public override double CurrentPosition()
             {
@@ -968,12 +974,14 @@ namespace IngameScript
             public bool UpdateJoints()
             {
                 bool withinThreshold = true;
+
                 foreach (Joint joint in Joints)
                 {
                     joint.UpdateJoint(Program.StatorTarget.MyState());
                     if (withinThreshold)
                         withinThreshold = joint.TargetThreshold;
                 }
+
                 return withinThreshold;
             }
             public bool UpdateFootLockStatus()
@@ -1137,31 +1145,40 @@ namespace IngameScript
                     {
                         //TogglePlaneing(false);
                         SnapShotPlane();
-                        safety = true;
+                        //safety = true;
+                        break;
                     }
 
                 foreach (Foot foot in Feet)
                 {
                     if (foot != null)
                     {
+                        //StreamDlog($"Updateing: {foot.Name}");
                         foot.GenerateAxisMagnitudes(Plane.WorldMatrix);
                         for (int i = 0; i < foot.Planars.Count; i++)
                             if (foot.Planars[i] != null)
                             {
+                                Joint plane = foot.GetPlanar(i);
+                                //StreamDlog($"Correcting: {plane.Name}\n" +
+                                //    $"Planeing: {plane.Planeing}");
+
                                 if (safety)
                                 {
-                                    foot.GetPlanar(i).PlaneCorrection = 0;
+                                    //StreamDlog("Safety break");
+                                    plane.PlaneCorrection = 0;
                                     continue;
                                 }
 
-                                if (foot.Planars[i].TAG == TurnTag && !foot.Locked)
+                                if (plane.TAG == TurnTag && !foot.Locked)
                                 {
-                                    foot.GetPlanar(i).PlaneCorrection = GeneratePlaneCorrection(foot.GetPlanar(i), foot.PlanarRatio, TurnBuffer);
+                                    //StreamDlog("Turning");
+                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, TurnBuffer);
                                 }
 
                                 else
                                 {
-                                    foot.GetPlanar(i).PlaneCorrection = GeneratePlaneCorrection(foot.GetPlanar(i), foot.PlanarRatio, -PlaneBuffer);
+                                    //StreamDlog("Planeing");
+                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, -PlaneBuffer);
                                 }
                             }
                     }
@@ -1282,7 +1299,7 @@ namespace IngameScript
                 TAG = FootTag;
             }
 
-            public Foot(/*string input,*/ Program program) : base(/*input,*/ program)
+            public Foot(Program program) : base(/*input,*/ program)
             {
                 StaticDlog("Foot Constructor:");
             }
@@ -1616,8 +1633,8 @@ namespace IngameScript
 
             void UpdateTriggers()
             {
-                if (Program.WithinTargetThreshold)
-                    UpdateSequenceClock();
+                //if (Program.WithinTargetThreshold)
+                UpdateSequenceClock();
 
                 if (CheckFrameTimer())
                     LoadKeyFrames(false);
@@ -1660,8 +1677,8 @@ namespace IngameScript
 
             bool CheckFrameTimer()
             {
-                //if (!Program.WithinTargetThreshold)
-                    //return false;
+                if (!Program.WithinTargetThreshold)
+                    return false;
                 if (CurrentClockMode == ClockMode.FOR && CurrentClockTime == 1)
                     return true;
                 if (CurrentClockMode == ClockMode.REV && CurrentClockTime == 0)
@@ -2183,10 +2200,17 @@ namespace IngameScript
                 DisplayManagerBuilder.Append($"T_Corrections:\n{T.X:0.###}:{T.Y:0.###}:{T.Z:0.###}\n");
                 DisplayManagerBuilder.Append($"Finals:\n{F.GetPlanar(0).ActiveTarget:0.###}\n{F.GetPlanar(1).ActiveTarget:0.###}\n{F.GetPlanar(2).ActiveTarget:0.###}\n");
                 DisplayManagerBuilder.Append($"LockedIndex: {CurrentWalkSet.LockedIndex}\n");
+                //DisplayManagerBuilder.Append($"Plane Matrix: {MatrixToString(Control.WorldMatrix, Digits)}\n");
 
                 for (int i = 0; i < CurrentWalkSet.Feet.Count; i++)
                 {
-                    DisplayManagerBuilder.Append($"Foot:{i} | Locked: {CurrentWalkSet.GetFoot(i).Locked}\n");
+                    Foot foot = CurrentWalkSet.GetFoot(i);
+                    DisplayManagerBuilder.Append($"Foot {i} Locked: {foot.Locked}\n");
+                    for (int j = 0; j < foot.Planars.Count; j++)
+                    {
+                        Joint joint = foot.GetPlanar(j);
+                        DisplayManagerBuilder.Append($"Planar {joint.Name} rotation axis: {joint.ReturnRotationAxis()}\n");
+                    }
                 }
             }
             catch
@@ -2883,7 +2907,7 @@ namespace IngameScript
             }
         }
 
-        void WalkTargetManager()
+        void WalkManager()
         {
             if (CurrentWalkSet == null ||
                 CurrentWalk == null)
@@ -3103,7 +3127,7 @@ namespace IngameScript
             RuntimeArguments(argument);
             ControlInput();
             FeetManager();
-            WalkTargetManager();
+            WalkManager();
             AnimationManager();
             DisplayManager();
 
@@ -3255,6 +3279,7 @@ namespace IngameScript
             {
                 if (joint.TAG == GripTag)
                     foot.Toes.Add(joint);
+
                 if (joint.TAG == PlaneTag || joint.TAG == TurnTag)
                     foot.Planars.Add(joint);
             }
