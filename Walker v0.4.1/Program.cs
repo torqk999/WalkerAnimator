@@ -1,12 +1,25 @@
-﻿using Sandbox.Game.EntityComponents;
+﻿using EmptyKeys.UserInterface.Generated.EditFactionIconView_Bindings;
+using Sandbox.Game.Debugging;
+using Sandbox.Game.EntityComponents;
+using Sandbox.Game.GUI;
 using Sandbox.ModAPI.Ingame;
 using Sandbox.ModAPI.Interfaces;
+
+//using Sandbox.Game.Entities.Cube;
+
 using SpaceEngineers.Game.ModAPI.Ingame;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.ComponentModel;
+using System.Diagnostics.Contracts;
+using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using VRage;
 using VRage.Collections;
@@ -16,6 +29,8 @@ using VRage.Game.GUI.TextPanel;
 using VRage.Game.ModAPI.Ingame;
 using VRage.Game.ModAPI.Ingame.Utilities;
 using VRage.Game.ObjectBuilders.Definitions;
+using VRage.Game.ObjectBuilders.VisualScripting;
+using VRage.Sync;
 using VRageMath;
 
 namespace IngameScript
@@ -31,6 +46,7 @@ namespace IngameScript
      * Custom Frame Lengths (Variable lerp time for the animation clock) || BUILT
      */
     #endregion
+
 
     /*
         %1::0:0:0
@@ -103,10 +119,7 @@ namespace IngameScript
         */
     partial class Program : MyGridProgram
     {
-
-        #region CONSTS
-
-        // need migrating //
+        #region USER CONSTS
         enum Screen
         {
             INPUT = 0,
@@ -120,23 +133,32 @@ namespace IngameScript
             DEBUG_STATIC = 9,
         }
 
-        bool CockpitMenus = true;
-        bool CapLines = true;
-        bool Snapping = true;
+        const string LCDgroupName       = "LCDS";
+        const string FlightGroupName    = "FLIGHT";
+        const string FootSignature      = "[FOOT]";
+        const string ToeSignature       = "[TOE]";
+        const string TurnSignature      = "[TURN]";
+        const string DroneChannel       = "MECH";
+        const string PlaneCustomName    = "EYEBALL";
+
+        #endregion
+
+        #region INTERNAL CONSTS
+
+        // need migrating //
+        static bool CapLines = true;
+        static bool Snapping = true;
         ////////////////////
 
         static UpdateFrequency DEF_FREQ = UpdateFrequency.Update1;
-        const string LCDgroupName = "LCDS";
-        const string FlightGroupName = "FLIGHT";
-        const string FootSignature = "[FOOT]";
-        const string ToeSignature = "[TOE]";
-        const string TurnSignature = "[TURN]";
-        const string Digits = "0.###";
+
+        const string VersionNumber = "0.6.1";
 
         const string OptionsTag = "&";
         const string SettingsTag = "#";
         const string FootTag = "@";
         const string SeqTag = "$";
+        const string ZframeTag = "%Z";
         const string KframeTag = "%0";
         const string JframeTag = "%1";
         const string JointSetTag = "S";
@@ -145,7 +167,7 @@ namespace IngameScript
         const string PlaneTag = "P";
         const string MagnetTag = "M";
         const string GripTag = "G";
-        
+
         const float PlaneScalar = .1f;
         const float TurnScalar = .2f;
 
@@ -164,9 +186,14 @@ namespace IngameScript
         const float LookScalar = 0.005f;
         const float RollScalar = 0.05f;
 
+        const int DroneTimeOut = 100;
         const int ReleaseCount = 50;
         const int DataTransferCap = 20;
         const int StaticDebugCharCap = 10000;
+
+        const int LineTotalCount = 12;
+        const int CharTotalCount = 30;
+        const int DefaultDressingSize = 2;
 
         const double MIN_VEL = .1;
         const double DEG2VEL = .5;
@@ -174,174 +201,306 @@ namespace IngameScript
         const double SAFETY = Math.PI / 4;
         #endregion
 
-        #region REFERENCES
-        // Core
-        IMyCockpit Control;
-        RootSort SORT = new RootSort();
+        #region RESOURCES
 
-        // Groups
-        List<IMyFunctionalBlock> FlightGroup = new List<IMyFunctionalBlock>();
-        List<Root> JsetBin = new List<Root>();
-        List<Sequence> Animations = new List<Sequence>();
+        #region MECHANICAL
 
-        // Active
-        Sequence CurrentWalk;
-        JointSet CurrentWalkSet;
+        static List<IMyFunctionalBlock> FlightGroup = new List<IMyFunctionalBlock>();
+        static List<Root> JointBin = new List<Root>();
+        static List<Root> JsetBin = new List<Root>();
 
-        // Load/Save Buffering
-        JointSet SetBuffer;
-        List<IMyTerminalBlock> BlockBuffer;
-        List<Foot> FeetBuffer = new List<Foot>();
-        List<JointFrame> jFrameBuffer = new List<JointFrame>();
-        List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
-        List<Root> sequenceBuffer = new List<Root>();
         #endregion
 
-        #region LOGIC
-        UpdateFrequency PROG_FREQ;
-        GUIMode CurrentGUIMode = GUIMode.MAIN;
-        GUILayer CurrentGUILayer = GUILayer.JSET;
+        #region OPTIONS
 
-        string SetDataBuffer;
-        int LoadJointIndex;
-        int LoadCustomDataIndex;
-        int TransferCount = 0;
+        static Toggle DroneOverride;
 
-        int CursorIndex = 0;
-        int LineTotalCount = 12;
-        int CharTotalCount = 30;
-        int LineBufferSize;
-        int HeaderSize = 0;
+        static Toggle IgnoreSave;
+        static Toggle IgnoreFeet;
+        static Toggle AutoSave;
+        static Toggle AutoDemo;
+        static Toggle Strafing;
+        static Toggle StatorTarget;
+        static Toggle StatorControl;
+        static Toggle Orientation;
+        static Toggle Descriptions;
 
-        int SelectedOptionIndex = 0;
-        int[] SaveObjectIndex = new int[Enum.GetNames(typeof(eRoot)).Length];
-        int[] SelectedObjectIndex = new int[Enum.GetNames(typeof(GUILayer)).Length];
+        static Setting StepThreshold;
+        static Setting FrameThreshold;
+        static Setting MaxAcceleration;
+        static Setting MaxSpeed;
+        static Setting MouseSensitivity;
 
-        bool Initialized = false;
+        static Setting SnappingIncrement;
+        static Setting FrameDurationIncrement;
+        static Setting SequenceSpeedIncrement;
 
-        bool SavingData = true;
-        bool LoadingData = true;
-        bool DataInit = false;
-        bool SetSaved = false;
-        bool SetBuffered = false;
-        bool BuildingJoints = false;
-        bool JointsBuilt = false;
-        bool WithinTargetThreshold = false;
+        static List<Option> Options;
+        static List<Toggle> Toggles;
+        static List<Setting> Settings;
 
-        List<Option> Options = new List<Option>();
-        List<Toggle> Toggles;
-        List<Setting> Settings;
+        #endregion
 
-        Toggle IgnoreSave;
-        Toggle IgnoreFeet;
-        Toggle AutoSave;
-        Toggle AutoDemo;
-        Toggle StatorTarget;
-        Toggle StatorControl;
-        Toggle Orientation;
-        Toggle Descriptions;
+        #region MENUS
 
-        Setting StepThreshold;
-        Setting FrameThreshold;
-        Setting MaxAcceleration;
-        Setting MaxSpeed;
-        Setting MouseSensitivity;
-        Setting SnappingIncrement; // Remove!
+        static LibraryPage Library = new LibraryPage();
+        static TablePage Assignment = new TablePage();
+        static ControlPage Controls = new ControlPage();
+        static OptionsPage OptionMenu = new OptionsPage();
+        static GenericPage GeneralMenu = new GenericPage();
 
-        Vector3 RotationBuffer;
-        float TurnBuffer = 0;
-        int LastMechWalkInput;
-        int[] LastMenuInput = new int[2];
+        static Dictionary<GUIMode, Page> Pages = new Dictionary<GUIMode, Page> {
+            {GUIMode.MAIN, GeneralMenu  },
+            {GUIMode.INFO, GeneralMenu  },
+
+            {GUIMode.EDIT, Library      },
+            {GUIMode.CREATE, Library    },
+
+            {GUIMode.PILOT, Controls    },
+            {GUIMode.OPTIONS, OptionMenu},
+            {GUIMode.ASSIGN, Assignment },
+        };
+
+        #endregion
+
+        #endregion
+
+        #region LOGIC VARS
+
+        #region LOAD/SAVE
+
+        static bool SavingData = false;
+        static bool LoadingData = true;
+        static bool SaveInit = false;
+        static bool JointsSaved = false;
+        static bool SetBuffered = false;
+        static bool BuildingJoints = false;
+        static bool JointsBuilt = false;
+
+        string LoadSetDataBuffer;
+        static int LoadJointIndex;
+        static int LoadCustomDataIndex;
+        static int TransferCount = 0;
+        static int[] SaveObjectIndex = new int[Enum.GetNames(typeof(eRoot)).Length];
+
+        static JointSet SetBuffer;
+        static List<IMyTerminalBlock> ReTagBuffer = new List<IMyTerminalBlock>();
+        static List<IMyTerminalBlock> BlockBuffer;
+        static List<Foot> FeetBuffer = new List<Foot>();
+        static List<JointFrame> jFrameBuffer = new List<JointFrame>();
+        static List<KeyFrame> kFrameBuffer = new List<KeyFrame>();
+        static List<Root> sequenceBuffer = new List<Root>();
+
+        #endregion
+
+        #region RUNTIME
+
+        static IMyCockpit CockPit;
+        static RootSort SORT = new RootSort();
+        static Program PROG;
+
+        static Sequence CurrentWalk;
+        static JointSet CurrentWalkSet;
+        static List<Sequence> Animations = new List<Sequence>();
+        static UpdateFrequency PROG_FREQ;
+        GUIMode _CurrentGUIMode;
+        static Vector3D InputRotationBuffer;
+        static double InputTurnBuffer = 0;
+
+        static int MoveBuffer = 0;
+        static int LastMechWalkInput;
+        static int[] LastMenuInput = new int[4];
+
+        static bool WAIT;
+        static bool Initialized = false;
+        //static bool EditorToggle = false;
+        static bool WithinTargetThreshold = false;
+
+        #endregion
+
+        #region DRONE
+
+        IMyTerminalBlock DesignatedPlane;
+        IMyBroadcastListener DroneEar;
+        int DroneTimeOutClock = 0;
+        double[] MECH_IX_BUFFER = new double[Enum.GetValues(typeof(MechIx)).Length];
+        bool DroneControlled => DroneTimeOutClock > 0;
+        #endregion
+
         #endregion
 
         #region ENUMS
+        enum MechAction
+        {
+            DEFAULT,
+            WAIT,
+            ZERO_OUT,
+            RELEASE,
+        }
+        enum MechIx
+        {
+            ACTION,
+            MOVE_Z,
+            MOVE_X,
+            YAW,
+            PITCH,
+            ROLL,
+        }
+
         enum ClockMode
         {
             REV = -1,
             PAUSE = 0,
             FOR = 1,
         }
+        enum eRoot
+        {
+            JSET = 0,
+            SEQUENCE = 1,
+            K_FRAME = 2,
+            J_FRAME = 3,
+
+            FOOT = 4,
+            TOE = 5,
+            MAGNET = 6,
+            JOINT = 7,
+
+            PARAM = 8,
+        }
+        const int ParamCount = 6;
+        enum PARAM
+        {
+            TAG = 0,
+            Name = 1,
+
+            uIX = 2, // unique index (my)
+            pIX = 3, // parent
+            fIX = 4, // foot
+            lIX = 5, // lock
+            sIX = 6, // sync
+
+            SettingInit = 4,
+            GroupName = 4,
+            GripDirection = 5,
+        }
+
         enum GUIMode
         {
             MAIN,
             INFO,
+            ASSIGN,
             CREATE,
             EDIT,
             PILOT,
             OPTIONS
         }
-        enum eRoot
+        public enum GUIKey
         {
-            JSET,
-            FOOT,
-            TOE,
-            MAGNET,
-            JOINT,
-            SEQUENCE,
-            K_FRAME,
-            J_FRAME
-        }
-        enum GUILayer
-        {
-            JSET = 0,
-            SEQUENCE = 1,
-            K_FRAME = 2,
-            J_FRAME = 3
-        }
-        enum GUINav
-        {
-            SCROLL_UP,
-            SCROLL_DOWN,
+            ALPHA_0,
+            ALPHA_1,
+            ALPHA_2,
+            ALPHA_3,
+            ALPHA_4,
+            ALPHA_5,
+            ALPHA_6,
+            ALPHA_7,
+            ALPHA_8,
+            ALPHA_9,
+
+            ALT_0,
+            ALT_1,
+            ALT_2,
+            ALT_3,
+            ALT_4,
+            ALT_5,
+            ALT_6,
+            ALT_7,
+            ALT_8,
+            ALT_9,
+
+            RIGHT,
+            LEFT,
             UP,
             DOWN,
             BACKWARD,
-            FORWARD
+            FORWARD,
+            ALT_RIGHT,
+            ALT_LEFT, 
         }
         #endregion
 
+        #region DELEGATES
+        public delegate int SaveJob();
+        public delegate void ToggleUpdate(bool state);
+        public delegate void SettingUpdate(float setting);
+        public delegate string[] PageBuilder();
+        public delegate void ButtonEvent();
+        #endregion
+
         #region OBJECTS
+
+        #region DATA
         struct RootData
         {
+            public static RootData Default = new RootData("Un-named", -1, -1, true);
+
             public string Name;
             public int MyIndex;
             public int ParentIndex;
-            public Program Program;
             public bool Overwrite;
 
-            public RootData(string name, int myIndex, int parentIndex, Program program, bool overwrite = false)
+            public RootData(string name, int myIndex, int parentIndex, bool overwrite = false)
             {
                 Name = name;
                 MyIndex = myIndex;
                 ParentIndex = parentIndex;
-                Program = program;
                 Overwrite = overwrite;
             }
         }
         struct JointData
         {
+            public static JointData Default = new JointData(RootData.Default, JointTag, -1, -1, 0);
+
             public RootData Root;
             public string TAG;
             public int FootIndex;
+            public int SyncIndex;
             public int GripDirection;
 
-            public JointData(RootData root, string tag, int footIndex, int gripDirection)
+            public JointData(RootData root, string tag, int footIndex, int syncIndex, int gripDirection)
             {
                 Root = root;
                 TAG = tag;
                 FootIndex = footIndex;
+                SyncIndex = syncIndex;
                 GripDirection = gripDirection;
             }
         }
-        // , IncrMax, IncrMin, Accelerant;
+        struct PageData
+        {
+            public static readonly PageData Default = new PageData(0, 0, DefaultDressingSize);
+
+            public int CursorIndex;
+            public int LineBufferSize;
+            public int HeaderSize;
+
+            public PageData(int cursorIndex, int lineBufferSize, int headerSize)
+            {
+                CursorIndex = cursorIndex;
+                LineBufferSize = lineBufferSize;
+                HeaderSize = headerSize;
+            }
+        }
+        #endregion
+
+        #region LOGIC
         class Option
         {
             public string Name;
-            public Program Prog;
             public string[] Description;
 
-            public Option(Program prog, string name, string describe)
+            public Option(string name, string describe)
             {
-                Prog = prog;
                 Name = name;
                 Description = describe.Split(' ');
             }
@@ -358,10 +517,12 @@ namespace IngameScript
         class Toggle : Option
         {
             bool State;
+            ToggleUpdate OptionUpdate;
 
-            public Toggle(Program prog, string name, string describe, bool init) : base(prog, name, describe)
+            public Toggle(string name, string describe, bool init, ToggleUpdate update = null) : base(name, describe)
             {
                 State = init;
+                OptionUpdate = update;
             }
 
             public override string Current()
@@ -371,6 +532,8 @@ namespace IngameScript
             public override void Adjust(bool flip = true)
             {
                 State = !State;
+                if (OptionUpdate != null)
+                    OptionUpdate(State);
             }
 
             public bool MyState()
@@ -384,16 +547,19 @@ namespace IngameScript
         }
         class Setting : Option
         {
+
             float
                 Value, ValueMax, ValueMin,
-                Increment;
+                defaultIncr;
+            Setting Incrementer;
 
-            public Setting(Program prog, string name, string describe, float init, float increment, float max = 1, float min = 0) : base(prog, name, describe)
+            public Setting(string name, string describe, float init, float increment, float max = 1, float min = 0, Setting incr = null) : base(name, describe)
             {
                 Value = init;
-                Increment = increment;
+                defaultIncr = increment;
                 ValueMax = max;
                 ValueMin = min;
+                Incrementer = incr;
                 Clamp();
             }
 
@@ -403,8 +569,11 @@ namespace IngameScript
             }
             public override void Adjust(bool incr = true)
             {
-                Value += incr ? Increment : -Increment;
+                float delta = Incrementer == null ? defaultIncr : Incrementer.Value;
+                Value += incr ? delta : -delta;
                 Clamp();
+                //if (OptionUpdate != null)
+                //OptionUpdate(Value);
             }
 
             public float MyValue()
@@ -425,7 +594,6 @@ namespace IngameScript
 
         class Root
         {
-            public Program Program;
             public RootSort MySort;
             public string Name;
             public string TAG;
@@ -433,62 +601,79 @@ namespace IngameScript
             public int ParentIndex;
             public bool BUILT;
 
-            public Root(/*string input, */Program program)
+            public Root()
             {
-                Program = program;
                 StaticDlog("Root Constructor:");
-                MySort = Program.SORT;
-                //BUILT = Load(input);
+                MySort = SORT;
+                BUILT = true;
             }
 
             public Root(RootData data)
             {
-                Program = data.Program;
-                MySort = Program.SORT;
+                MySort = SORT;
                 Name = data.Name;
                 MyIndex = data.MyIndex;
                 ParentIndex = data.ParentIndex;
                 BUILT = true;
             }
 
-            public RootData Parent(string name, int index = -1)
+            public RootData ParentData(string name, int index = -1)
             {
-                return new RootData(name, index, MyIndex, Program);
+                return new RootData(name, index, MyIndex);
             }
             public void StaticDlog(string input, bool newLine = true)
             {
-                Program.Static($"{input}{(newLine ? "\n" : "")}");
+                Static($"{input}{(newLine ? "\n" : "")}");
             }
             public void StreamDlog(string input, bool newLine = true)
             {
-                Program.DebugBinStream.Append($"{input}{(newLine ? "\n" : "")}");
+                DebugBinStream.Append($"{input}{(newLine ? "\n" : "")}");
             }
-            public virtual bool Save()
-            {
-                return true;
-            }
-            public void Load(string input)
+
+            protected bool Load(string input)//, Option option = null)
             {
                 StaticDlog($"Load Root String: {input}");
-                Load(input.Split(':'));
+                return Load(input.Split(':'));//, option);
             }
-            public virtual bool Load(string[] data)
+            protected virtual bool Load(string[] data)//, Option option = null)
             {
                 StaticDlog("Root Load:");
                 try
                 {
-                    TAG = data[0];
-                    Name = data[1];
-                    MyIndex = int.Parse(data[2]);
-                    ParentIndex = int.Parse(data[3]);
-                    BUILT = true;
+
+                    TAG = data[(int)PARAM.TAG];
+
+                    Name = data[(int)PARAM.Name];
+
+                    MyIndex = int.Parse(data[(int)PARAM.uIX]);
+
+                    ParentIndex = int.Parse(data[(int)PARAM.pIX]);
+
                     return true;
                 }
-                catch { BUILT = false; return false; }
+                catch { return false; }
             }
-            public virtual string SaveData()
+            public string SaveData()
             {
-                return $"{TAG}:{Name}:{MyIndex}:{ParentIndex}";
+                string[] buffer = new string[Enum.GetNames(typeof(PARAM)).Length];
+                for (int i = 0; i < buffer.Length; i++)
+                    buffer[i] = "";
+
+                saveData(buffer);
+
+                RootDataBuilder.Clear();
+
+                for (int i = 0; i < buffer.Length; i++)
+                    RootDataBuilder.Append($"{buffer[i]}:");
+
+                return RootDataBuilder.ToString();
+            }
+            protected virtual void saveData(string[] saveBuffer)
+            {
+                saveBuffer[(int)PARAM.TAG] = TAG;
+                saveBuffer[(int)PARAM.Name] = Name;
+                saveBuffer[(int)PARAM.uIX] = MyIndex.ToString();
+                saveBuffer[(int)PARAM.pIX] = ParentIndex.ToString();
             }
             public virtual void Insert(int index, Root root)
             {
@@ -513,10 +698,884 @@ namespace IngameScript
                     return 0;
             }
         }
+        #endregion
 
-        class Joint : Root
+        #region MENUS
+        class LibraryPage : Page
+        {
+            public eRoot CurrentDirectoryLayer = eRoot.JSET;
+
+            public LibraryPage() : base("Library")
+            {
+                Buttons = new Dictionary<GUIKey, Button>
+                {
+                    {GUIKey.RIGHT   ,   new Button("Enter Directory"   ,    ()=>ChangeDirectory(false)) },
+                    {GUIKey.LEFT    ,   new Button("Parent Directory"  ,    ()=>ChangeDirectory(true)) },
+                    {GUIKey.FORWARD ,   new Button("Up Directory"      ,    ()=>SelectElement(-1)) },
+                    {GUIKey.BACKWARD,   new Button("Down Directory"    ,    ()=>SelectElement(1)) },
+
+                    {GUIKey.ALPHA_1,    new Button("Main",                  () => SetGuiMode(GUIMode.MAIN)) },
+                    {GUIKey.ALPHA_2,    new Button("Toggle T-Pose Edit",    () => {/*EditorToggle = !EditorToggle*/}) },
+                    {GUIKey.ALPHA_3,    new Button("Creator",               () => SetGuiMode(GUIMode.CREATE)) },
+                    {GUIKey.ALPHA_4,    new Button("Increment",             () => AdjustValue(GetSelectedAnim(),true))},
+                    {GUIKey.ALPHA_5,    new Button("Decrement",             () => AdjustValue(GetSelectedAnim(),false))},
+                    {GUIKey.ALPHA_6,    new Button("Overwrite",             () => EditValue(GetSelectedAnim()))},
+                    {GUIKey.ALPHA_7,    new Button("Toggle Stator Control", () => StatorTarget.Adjust())},
+
+                    {GUIKey.ALT_1,      new Button("Main",                  () => SetGuiMode(GUIMode.MAIN)) },
+                    {GUIKey.ALT_2,      new Button("Toggle T-Pose Edit",    () => {/*EditorToggle = !EditorToggle*/}) },
+                    {GUIKey.ALT_3,      new Button("Editor",                () => SetGuiMode(GUIMode.EDIT))},
+                    {GUIKey.ALT_4,      new Button("Load",                  () => LoadItem())},
+                    {GUIKey.ALT_5,      new Button("Insert",                () => InsertItem())},
+                    {GUIKey.ALT_6,      new Button("Add",                   () => InsertItem(false))},
+                    {GUIKey.ALT_7,      new Button("Delete",                () => {DeleteItem(); LibraryUpdate();})},
+                    {GUIKey.ALT_8,      new Button("ChangeName",            () => EditName())}
+                };
+                SelectedIndexes = new Dictionary<eRoot, int>
+                {
+                    {eRoot.JSET,0},
+                    {eRoot.SEQUENCE,0},
+                    {eRoot.K_FRAME,0},
+                    {eRoot.J_FRAME,0}
+                };
+            }
+
+            public override void SetMode(GUIMode mode)
+            {
+                switch (mode)
+                {
+                    case GUIMode.CREATE:
+                        Name = "Creator";
+                        AlternateMode = true;
+                        break;
+
+                    case GUIMode.EDIT:
+                        Name = "Editor";
+                        AlternateMode = false;
+                        break;
+
+                    default:
+                        Name = "Library";
+                        break;
+                }
+            }
+            protected override string[] PageBuilder()
+            {
+                cursorCounter = 0;
+                RawBuffer.Clear();
+                RawBuffer.Add($"= Library = [StatorTarget:{StatorTarget.MyState()}]=");
+
+                Animation anim = null;
+                switch (CurrentDirectoryLayer)
+                {
+                    case eRoot.SEQUENCE:
+                        anim = GetSelectedSequence();
+                        break;
+
+                    case eRoot.K_FRAME:
+                        anim = GetSelectedKeyFrame();
+                        break;
+
+                    case eRoot.J_FRAME:
+                        anim = GetSelectedJointFrame();
+                        break;
+                }
+                if (anim != null)
+                {
+                    RawBuffer.Add($"= {anim.MySetting.Name} : {anim.MySetting.MyValue()} =");
+                    if (Descriptions.MyState())
+                        LineWrapper(RawBuffer, anim.MySetting.Description, CharTotalCount);
+                }
+                RawBuffer.Add($"=================");
+
+                HeaderSize = RawBuffer.Count;
+
+                try
+                {
+                    if (JsetBin.Count == 0)
+                    {
+                        RawBuffer.Add("No limbs loaded!");
+                    }
+
+                    for (int jSetIndex = 0; jSetIndex < JsetBin.Count; jSetIndex++)
+                    {
+                        if (JsetBin[jSetIndex] == null)
+                        {
+                            RawBuffer.Add("Null Set!");
+                            continue;
+                        }
+
+                        AppendLibraryItem(eRoot.JSET, jSetIndex, JsetBin[jSetIndex].Name);
+
+                        if ((int)CurrentDirectoryLayer < 1 || SelectedIndex(eRoot.JSET) != jSetIndex)
+                            continue;
+
+                        CursorIndex = cursorCounter;
+                        JointSet set = GetJointSet(jSetIndex);
+
+                        JsetStringBuilder(set);
+                    }
+                }
+                catch
+                {
+                    RawBuffer.Add("FAIL POINT!\n");
+                }
+
+                string[] output = RawBuffer.ToArray();
+                return output;
+            }
+            public override int SelectedCount()
+            {
+                return SelectedCount(CurrentDirectoryLayer);
+            }
+            public override int SelectedCount(eRoot selection)
+            {
+                switch (CurrentDirectoryLayer)
+                {
+                    case eRoot.JSET:
+                        return JsetBin.Count;
+
+                    case eRoot.SEQUENCE:
+                        if (GetSelectedSet() == null)
+                            return 0;
+                        return GetSelectedSet().Sequences.Count;
+
+                    case eRoot.K_FRAME:
+                        if (GetSelectedSequence() == null)
+                            return 0;
+                        return GetSelectedSequence().Frames.Count;
+
+                    case eRoot.J_FRAME:
+                        if (GetSelectedKeyFrame() == null)
+                            return 0;
+                        return GetSelectedKeyFrame().Jframes.Count;
+
+                    default:
+                        return 0;
+                }
+            }
+            public override Root SelectedRoot()
+            {
+                JointSet jSet = GetJointSet(SelectedIndex(eRoot.JSET));
+
+                if (jSet == null || CurrentDirectoryLayer == eRoot.JSET)
+                    return jSet;
+
+                Sequence sequence = jSet.GetSequence(SelectedIndex(eRoot.SEQUENCE));
+
+                if (sequence == null || CurrentDirectoryLayer == eRoot.SEQUENCE)
+                    return sequence;
+
+                KeyFrame keyFrame = sequence.GetKeyFrame(SelectedIndex(eRoot.K_FRAME));
+
+                if (keyFrame == null || CurrentDirectoryLayer == eRoot.K_FRAME)
+                    return keyFrame;
+
+                JointFrame jFrame = keyFrame.GetJointFrameByFrameIndex(SelectedIndex(eRoot.J_FRAME));
+
+                return jFrame;
+            }
+            void SelectElement(int adjust = 0)
+            {
+                int count = SelectedCount();
+                int index = SelectedIndex(CurrentDirectoryLayer) + adjust;
+                index = index >= count ? 0 : index < 0 ? count - 1 : index;
+                SelectedIndexes[CurrentDirectoryLayer] = index;
+            }
+            void ChangeDirectory(bool up)
+            {
+                int layer = (int)CurrentDirectoryLayer;
+                layer += up ? -1 : 1;
+                layer = layer < (int)eRoot.JSET ? (int)eRoot.J_FRAME : layer > (int)eRoot.J_FRAME ? (int)eRoot.JSET : layer;
+                //layer += EditorToggle ? up ? 3 : -3 : up ? 1 : -1;
+                //layer = layer > 3 ? 0 : layer < 0 ? 3 : layer;
+                //
+                //if (up)
+                //    layer += ((int)CurrentDirectoryLayer == 3) ? 0 : 1;
+                //else
+                //    layer -= ((int)CurrentDirectoryLayer == 0) ? 0 : 1;
+                CurrentDirectoryLayer = (eRoot)layer;
+                LibraryUpdate();
+                //LibrarySelection(up ? -1 : 1);
+            }
+            void DemoSelectedFrame()
+            {
+                if (AutoDemo.MyState())
+                {
+                    try
+                    {
+                        GetSelectedSequence().DemoKeyFrame(SelectedIndex(eRoot.K_FRAME));
+                    }
+                    catch
+                    {
+                        Static("Failed to demo keyFrame!\n");
+                    }
+                }
+            }
+            void LoadItem()
+            {
+                if (CurrentDirectoryLayer == eRoot.J_FRAME) // do nothing
+                    return;
+
+                CurrentWalkSet = GetSelectedSet();
+
+                if (CurrentDirectoryLayer == eRoot.JSET)
+                    return;
+
+                LoadWalk(CurrentWalkSet.GetSequence(SelectedIndex(eRoot.SEQUENCE)));
+
+                if (CurrentDirectoryLayer == eRoot.SEQUENCE)
+                    return;
+
+                if (CurrentWalk != null)
+                    CurrentWalk.DemoKeyFrame(SelectedIndex(eRoot.K_FRAME));
+            }
+
+            void InsertSet(string name, bool add)
+            {
+                if (name == null)
+                    return;
+
+                //PROG.LibraryBuilder.Add("Inserting set...");
+
+                int index = SelectedIndex(0);
+                index += add ? 1 : 0;
+
+                if (index >= JsetBin.Count)
+                {
+                    JsetBin.Add(NewJointSet(name, JsetBin.Count));
+                    return;
+                }
+
+                JsetBin.Insert(index, NewJointSet(name, index));
+                ReIndexSets();
+
+                //PROG.LibraryBuilder.Add("Inserted!");
+            }
+            void ReIndexSets()
+            {
+                for (int i = 0; i < JsetBin.Count; i++)
+                    JsetBin[i].MyIndex = i;
+            }
+            void AdjustValue(Animation anim, bool increase)
+            {
+                if (anim == null)
+                    return;
+
+                anim.MySetting.Adjust(increase);
+            }
+            void EditValue(Animation anim)
+            {
+                if (anim == null)
+                    return;
+
+                float value;
+                if (!UserInputFloat(out value))
+                    return;
+
+                anim.MySetting.Change(value);
+            }
+            void EditName()
+            {
+                string name = null;
+                UserInputString(ref name);
+                if (name == null)
+                    return;
+
+                Root root = SelectedRoot();
+                if (root == null)
+                    return;
+
+                root.Name = name;
+            }
+            void InsertItem(bool add = true)
+            {
+                string name = null;
+                int index = -1;
+                UserInputString(ref name);
+                JointSet set;
+                Sequence seq;
+                switch (CurrentDirectoryLayer)
+                {
+                    case eRoot.JSET:
+                        InsertSet(name, add);
+                        break;
+
+                    case eRoot.SEQUENCE:
+
+                        set = GetSelectedSet();
+                        index = SelectedIndex(eRoot.SEQUENCE);
+                        index += add ? 1 : 0;
+
+                        if (name == null)
+                            name = $"New Sequence";
+
+                        RootData seqRoot = set.ParentData(name, index);
+                        set.Insert(index, new Sequence(seqRoot, set));
+                        break;
+
+                    case eRoot.K_FRAME:
+
+                        set = GetSelectedSet();
+                        seq = set.GetSequence(SelectedIndex(eRoot.SEQUENCE));
+                        index = SelectedIndex(eRoot.K_FRAME);
+                        index += add ? 1 : 0;
+
+                        if (name == null)
+                            name = $"New Frame";
+
+                        seq.AddKeyFrameSnapshot(index, name, Snapping);
+                        break;
+                }
+
+                LibraryUpdate();
+            }
+            void DeleteItem()
+            {
+                switch (CurrentDirectoryLayer)
+                {
+                    case eRoot.JSET:
+                        JsetBin.RemoveAt(SelectedIndex(eRoot.JSET));
+                        break;
+
+                    case eRoot.SEQUENCE:
+                        GetSelectedSet().Sequences.RemoveAt(SelectedIndex(eRoot.SEQUENCE));
+                        break;
+
+                    case eRoot.K_FRAME:
+                        GetSelectedSequence().RemoveKeyFrameAtIndex(SelectedIndex(eRoot.K_FRAME));
+                        break;
+                }
+
+                int a = JsetBin.Count;
+
+                if (SelectedIndex(eRoot.JSET) >= a && a > 0)
+                {
+                    SelectedIndexes[eRoot.JSET] = a - 1;
+                }
+
+                if (a == 0 || JsetBin[SelectedIndex(eRoot.JSET)] == null)
+                {
+                    SelectedIndexes[eRoot.SEQUENCE] = 0;
+                    SelectedIndexes[eRoot.K_FRAME] = 0;
+                    SelectedIndexes[eRoot.J_FRAME] = 0;
+                    goto End;
+                }
+
+                int b = GetSelectedSet().Sequences.Count;
+                if (SelectedIndex(eRoot.SEQUENCE) >= b && b > 0)
+                {
+                    SelectedIndexes[eRoot.SEQUENCE] = b - 1;
+                }
+
+                if (b == 0 || GetSelectedSequence() == null)
+                {
+                    SelectedIndexes[eRoot.K_FRAME] = 0;
+                    SelectedIndexes[eRoot.J_FRAME] = 0;
+                    goto End;
+                }
+
+                int c = GetSelectedSequence().Frames.Count;
+                if (SelectedIndex(eRoot.J_FRAME) >= c && c > 0)
+                {
+                    SelectedIndexes[eRoot.J_FRAME] = c - 1;
+                }
+
+                if (c == 0 || GetSelectedKeyFrame() == null)
+                {
+                    SelectedIndexes[eRoot.J_FRAME] = 0;
+                    goto End;
+                }
+
+            End:
+
+                LibraryUpdate();
+            }
+
+            void LibraryUpdate()
+            {
+                int[] counts = new int[4];
+                JointSet limb = null;
+                Sequence seq = null;
+                KeyFrame frame = null;
+
+                if (JsetBin.Count > SelectedIndex(eRoot.JSET))
+                    limb = GetSelectedSet();
+
+                if (limb != null && limb.Sequences.Count > SelectedIndex(eRoot.SEQUENCE))
+                    seq = limb.GetSequence(SelectedIndex(eRoot.SEQUENCE));
+
+                if (seq != null && seq.Frames.Count > SelectedIndex(eRoot.K_FRAME))
+                    frame = seq.GetKeyFrame(SelectedIndex(eRoot.K_FRAME));
+
+                if (limb == null && CurrentDirectoryLayer > eRoot.JSET)
+                    CurrentDirectoryLayer = eRoot.JSET;
+
+                else if (seq == null && CurrentDirectoryLayer > eRoot.SEQUENCE)
+                    CurrentDirectoryLayer = eRoot.SEQUENCE;
+
+                else if (frame == null && CurrentDirectoryLayer > eRoot.K_FRAME)
+                    CurrentDirectoryLayer = eRoot.K_FRAME;
+
+                SelectElement();
+            }
+
+            void AppendLibraryItem(eRoot layer, int index, string itemName)
+            {
+                DisplayManagerBuilder.Clear();
+
+                for (int i = 0; i < (int)layer; i++) // LayerIndent
+                    DisplayManagerBuilder.Append(" ");
+
+                // Selection Logic
+                bool selected = CurrentDirectoryLayer == layer && SelectedIndexes[layer] == index;
+                CursorIndex = selected ? cursorCounter : CursorIndex;
+                cursorCounter++;
+
+                // Cursor Logic
+                DisplayManagerBuilder.Append(BuildCursor(selected));
+                DisplayManagerBuilder.Append($"{index}:{itemName}");
+
+                switch (layer)
+                {
+                    case eRoot.J_FRAME:
+                        try
+                        {
+                            DisplayManagerBuilder.Append($"[{GetSelectedSet().Joints[index].TAG}]");
+                        }
+                        catch { }
+                        break;
+
+                    case eRoot.JSET:
+                        try
+                        {
+                            DisplayManagerBuilder.Append($"{(GetSelectedSet() == CurrentWalkSet ? ":[LOADED]" : "")}");
+                        }
+                        catch { }
+                        break;
+                }
+
+
+                RawBuffer.Add(DisplayManagerBuilder.ToString());
+            }
+            void JsetStringBuilder(JointSet set)
+            {
+                if (set.Sequences.Count == 0)
+                    RawBuffer.Add(" No sequences found!");
+
+                for (int seqIndex = 0; seqIndex < set.Sequences.Count; seqIndex++)
+                {
+                    AppendLibraryItem(eRoot.SEQUENCE, seqIndex, set.Sequences[seqIndex].Name);
+
+                    if ((int)CurrentDirectoryLayer < 2 || SelectedIndex(eRoot.SEQUENCE) != seqIndex)
+                        continue;
+
+                    CursorIndex = cursorCounter;
+                    Sequence seq = set.GetSequence(seqIndex);
+                    SequenceStringBuilder(seq);
+                }
+            }
+            void SequenceStringBuilder(Sequence seq)
+            {
+                if (seq.Frames.Count == 0)
+                    RawBuffer.Add("  No frames found!");
+
+                for (int kFrameIndex = 0; kFrameIndex < seq.Frames.Count; kFrameIndex++)
+                {
+                    AppendLibraryItem(eRoot.K_FRAME, kFrameIndex, seq.Frames[kFrameIndex].Name);
+
+                    if ((int)CurrentDirectoryLayer < 3 || SelectedIndex(eRoot.K_FRAME) != kFrameIndex)
+                        continue;
+
+                    CursorIndex = cursorCounter;
+                    KeyFrame kFrame = seq.GetKeyFrame(kFrameIndex);
+                    KframeStringBuilder(kFrame);
+                }
+            }
+            void KframeStringBuilder(KeyFrame kFrame)
+            {
+                if (kFrame.Jframes.Count == 0)
+                    RawBuffer.Add("   No j-Frames found!");
+
+                for (int jFrameIndex = 0; jFrameIndex < kFrame.Jframes.Count(); jFrameIndex++)
+                {
+                    JointFrame jFrame = kFrame.GetJointFrameByFrameIndex(jFrameIndex);
+                    JframeStringBuilder(jFrame);
+                }
+            }
+            void JframeStringBuilder(JointFrame jFrame)
+            {
+                AppendLibraryItem(eRoot.J_FRAME, jFrame.MyIndex, $"{jFrame.Joint.Connection.CustomName}:{jFrame.MySetting.MyValue()}");
+            }
+        }
+        class TablePage : Page
+        {
+            public TablePage() : base("Assignment Table")
+            {
+                Buttons = new Dictionary<GUIKey, Button>
+                {
+                    {GUIKey.ALPHA_1,    new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
+                    {GUIKey.ALPHA_2,    new Button("Aquire All Joints", ()=> FindAndAssignAllJoints()) },
+
+                    {GUIKey.ALPHA_3,    new Button("Add foot",          ()=> TableJsetAdjust(0,1))     },
+                    {GUIKey.ALPHA_4,    new Button("Remove foot",       ()=> TableJsetAdjust(0,-1))    },
+                    {GUIKey.ALT_LEFT,   new Button("Previous JointSet", ()=> TableJsetAdjust(-1, 0))   },
+                    {GUIKey.ALT_RIGHT,  new Button("Next JointSet",     ()=> TableJsetAdjust(1, 0))    },
+
+                    {GUIKey.FORWARD,    new Button("Shift Up",          ()=> TableShift(0, 1, 0))      },
+                    {GUIKey.BACKWARD,   new Button("Shift Down",        ()=> TableShift(0, -1, 0))     },
+                    {GUIKey.LEFT,       new Button("Shift Left",        ()=> TableShift(-1, 0, 0))     },
+                    {GUIKey.RIGHT,      new Button("Shift Right",       ()=> TableShift(1, 0, 0))      },
+
+                    {GUIKey.UP,         new Button("Increase Value",    ()=> TableShift(0,0,1))        },
+                    {GUIKey.DOWN,       new Button("Decrease Value",    ()=> TableShift(0,0,-1))       }
+                };
+                SelectedIndexes = new Dictionary<eRoot, int>
+                {
+                    {eRoot.JSET, 0},
+                    {eRoot.JOINT, 0},
+                    {eRoot.PARAM, 0},
+                };
+            }
+
+            protected override string[] PageBuilder()
+            {
+                cursorCounter = 0;
+                RawBuffer.Clear();
+                RawBuffer.Add("= Assignment =");
+                RawBuffer.Add($"[Selected JSET:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Name}][FootCount:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Feet.Count}]=");
+
+
+                DisplayManagerBuilder.Clear();
+
+                for (int i = 0; i < 6; i++)
+                    DisplayManagerBuilder.Append($"[{(PARAM)i}]");
+
+                RawBuffer.Add(DisplayManagerBuilder.ToString());
+
+                for (int i = 0; i < JointBin.Count; i++)
+                    AppendJointToTable((Joint)JointBin[i], i);
+
+                return RawBuffer.ToArray();
+            }
+
+            void AppendJointToTable(Joint joint, int index)
+            {
+                DisplayManagerBuilder.Clear();
+
+                bool selected = SelectedIndexes[eRoot.JOINT] == index;
+                CursorIndex = selected ? cursorCounter : CursorIndex;
+                cursorCounter++;
+
+                DisplayManagerBuilder.Append(BuildCursor(selected));
+                DisplayManagerBuilder.Append($"{index}:{joint.SaveData()}");
+
+                RawBuffer.Add(DisplayManagerBuilder.ToString());
+
+            }
+            void FindAndAssignAllJoints()
+            {
+                ReTagBuffer.Clear();
+
+                GetGridBlocksOfType(ReTagBuffer);
+
+                foreach (IMyMechanicalConnectionBlock joint in ReTagBuffer)
+                {
+                    Joint freshJoint = NewJoint(joint, JointData.Default);
+                    int oldIndex = JointBin.FindIndex(x => x.MyIndex == freshJoint.MyIndex);
+                    if (freshJoint.MyIndex > -1 && oldIndex > -1)
+                        JointBin[oldIndex] = freshJoint;
+                    else
+                        JointBin.Add(freshJoint);
+                }
+            }
+            void TableJsetAdjust(int deltaIX, int deltaFeet)
+            {
+                SelectedIndexes[eRoot.JSET] += deltaIX;
+                SelectedIndexes[eRoot.JSET] = SelectedIndexes[eRoot.JSET] < 0 ? JsetBin.Count - 1 : SelectedIndexes[eRoot.JSET] >= JsetBin.Count ? 0 : SelectedIndexes[eRoot.JSET];
+
+            }
+            void TableShift(int deltaX, int deltaY, int deltaValue)
+            {
+                SelectedIndexes[eRoot.JOINT] += deltaY;
+                SelectedIndexes[eRoot.JOINT] = SelectedIndexes[eRoot.JOINT] < 0 ? JointBin.Count - 1 : SelectedIndexes[eRoot.JOINT] >= JointBin.Count ? 0 : SelectedIndexes[eRoot.JOINT];
+
+                SelectedIndexes[eRoot.PARAM] += deltaX;
+                SelectedIndexes[eRoot.PARAM] = SelectedIndexes[eRoot.PARAM] < 0 ? ParamCount - 1: SelectedIndexes[eRoot.PARAM] >= ParamCount ? 0 : SelectedIndexes[eRoot.PARAM];
+            }
+        }
+        class OptionsPage : Page
+        {
+            public OptionsPage() : base("Options")
+            {
+                Buttons = new Dictionary<GUIKey, Button>
+                {
+                    { GUIKey.RIGHT,    new Button("Adjust Up",  ()=>AdjustOption(true))         },
+                    { GUIKey.LEFT,     new Button("Adjust Down",()=>AdjustOption(false))        },
+                    { GUIKey.FORWARD,  new Button("Menu Up",    ()=>SelectOption(true))         },
+                    { GUIKey.BACKWARD, new Button("Menu Down",  ()=>SelectOption(false))        },
+
+                    { GUIKey.ALPHA_1,  new Button("Main",       () => SetGuiMode(GUIMode.MAIN)) },
+                };
+                SelectedIndexes = new Dictionary<eRoot, int>
+                { { eRoot.PARAM,0} };
+            }
+            protected override string[] PageBuilder()
+            {
+                List<string> stringList = new List<string>();
+                stringList.Add("===Options===");
+                if (Descriptions.MyState())
+                    LineWrapper(stringList, Options[SelectedIndexes[eRoot.PARAM]].Description, CharTotalCount);
+                stringList.Add($"=================");
+                HeaderSize = stringList.Count;
+
+                try
+                {
+                    for (int i = 0; i < Options.Count; i++)
+                        AppendOptionItem(i, stringList, Options[i]);
+                }
+                catch
+                {
+                    stringList.Add("Error!");
+                }
+
+                string[] output = stringList.ToArray();
+                return output;
+            }
+            void AppendOptionItem(int index, List<string> rawStrings, Option option)
+            {
+                DisplayManagerBuilder.Clear();
+
+                bool selected = index == SelectedIndexes[eRoot.PARAM];
+
+                DisplayManagerBuilder.Append(BuildCursor(selected));
+                DisplayManagerBuilder.Append($"{option.Name}:{option.Current()}");
+
+                rawStrings.Add(DisplayManagerBuilder.ToString());
+            }
+            void SelectOption(bool up)
+            {
+                SelectedIndexes[eRoot.PARAM] += up ? -1 : 1;
+                SelectedIndexes[eRoot.PARAM] = SelectedIndexes[eRoot.PARAM] >= Options.Count ? 0 : SelectedIndexes[eRoot.PARAM] < 0 ? Options.Count - 1 : SelectedIndexes[eRoot.PARAM];
+                CursorIndex = SelectedIndexes[eRoot.PARAM];
+            }
+            void AdjustOption(bool up)
+            {
+                Options[SelectedIndexes[eRoot.PARAM]].Adjust(up);
+            }
+        }
+        class GenericPage : Page
+        {
+            public GenericPage() : base("Default Page")
+            {
+                HeaderSize = 2;
+
+                Buttons = new Dictionary<GUIKey, Button>
+                {
+                    {GUIKey.ALPHA_1, new Button("Controls",         ()=> SetGuiMode( GUIMode.PILOT  ))  },
+                    {GUIKey.ALPHA_2, new Button("Information",      ()=> SetGuiMode( GUIMode.INFO   ))  },
+                    {GUIKey.ALPHA_3, new Button("Library",          ()=> SetGuiMode( GUIMode.CREATE ))  },
+                    {GUIKey.ALPHA_4, new Button("Options",          ()=> SetGuiMode( GUIMode.OPTIONS))  },
+                    {GUIKey.ALPHA_5, new Button("Assignment",       ()=> SetGuiMode( GUIMode.ASSIGN ))  },
+                    {GUIKey.ALPHA_6, new Button("Save CustomData",  ()=> WriteCustomData())             },
+                    {GUIKey.ALPHA_7, new Button("Save ActiveData",  ()=> SavingData = true)             },
+                    {GUIKey.ALPHA_8, new Button("Reload ActiveData",()=> LoadingData = true)            },
+
+                    {GUIKey.ALT_1,   new Button("Main",             ()=> SetGuiMode(GUIMode.MAIN))      },
+
+                    {GUIKey.FORWARD, new Button("Scroll Up",        ()=> Scroll(true))                  },
+                    {GUIKey.BACKWARD,new Button("Scroll Down",      ()=> Scroll(false))                 },
+                };
+            }
+            void Scroll(bool up)
+            {
+                CursorIndex += up ? -1 : 1;
+                CursorIndex = CursorIndex < 1 ? 0 : CursorIndex >= RawBuffer.Count ? RawBuffer.Count - 1 : CursorIndex;
+            }
+
+            public override void SetMode(GUIMode mode)
+            {
+                switch (mode)
+                {
+                    case GUIMode.MAIN:
+                        Name = "Main Menu";
+                        AlternateMode = false;
+                        break;
+
+                    case GUIMode.INFO:
+                        Name = "Information";
+                        AlternateMode = true;
+                        break;
+
+                    default:
+                        Name = "Default Page";
+                        break;
+                }
+            }
+            protected override string[] PageBuilder()
+            {
+                string input = AlternateMode ? InfoText : MainText;
+
+                string[] output = input.Split('\n');
+                RawBuffer = output.ToList();
+                //LineBufferSize = output.Length;
+                return output;
+            }
+        }
+        class ControlPage : Page
+        {
+            public ControlPage() : base("Controls")
+            {
+                Buttons = new Dictionary<GUIKey, Button>
+                {
+                    {GUIKey.ALPHA_1, new Button("Main",                 () => SetGuiMode(GUIMode.MAIN))     },
+                    {GUIKey.ALPHA_2, new Button("Unlock Feet",          () => CurrentWalkSet?.UnlockAllFeet()) },
+                    {GUIKey.ALPHA_3, new Button("Toggle Orientation",   () => Orientation.Adjust()) },
+                    {GUIKey.ALPHA_4, new Button("Toggle Pause",         () => CurrentWalk?.ToggleClockPause()) },
+                    {GUIKey.ALPHA_5, new Button("Toggle Direction",     () => CurrentWalk?.ToggleClockDirection()) },
+                    {GUIKey.ALPHA_6, new Button("Zero Out Mech/Walk",   () => ZeroOutMech()) },
+                };
+            }
+
+            protected override string[] PageBuilder()
+            {
+                List<string> stringList = new List<string>();
+                stringList.Add("===Controls===");
+                stringList.Add("==============");
+
+                try
+                {
+                    stringList.Add($"{(CurrentWalkSet == null ? "No legs!" : CurrentWalkSet.Locked ? "Walking..." : "Flying...")}");
+                }
+                catch
+                {
+                    stringList.Add("Error!");
+                }
+
+                string[] output = stringList.ToArray();
+                return output;
+            }
+
+            void ZeroOutMech()
+            {
+                CurrentWalkSet?.ZeroJointSet(CurrentWalkSet.ZeroFrame);
+                CurrentWalk?.ZeroSequence();
+            }
+        }
+        class Page
+        {
+            public string Name;
+
+            public int CursorIndex;
+            protected int cursorCounter;
+            public int LineBufferSize;
+            public int HeaderSize;
+
+            protected bool AlternateMode;
+
+            protected Dictionary<GUIKey, Button> Buttons;
+            protected Dictionary<eRoot, int> SelectedIndexes;
+            
+            protected List<string> RawBuffer = new List<string>();
+
+            public Page(string name)
+            {
+                Name = name;
+            }
+            public bool TriggerButton(GUIKey keyPress)
+            {
+                if (!Buttons.ContainsKey(keyPress))
+                    return false;
+
+                Buttons[keyPress].Trigger();
+                return true;
+            }
+            public virtual void SetMode(GUIMode mode) { }
+            protected virtual string[] PageBuilder() { return null; }
+            public int SelectedIndex(eRoot selection) { return SelectedIndexes.ContainsKey(selection) ? SelectedIndexes[selection] : -1; }
+            public virtual int SelectedCount(eRoot selection) { return 0; }
+            public virtual int SelectedCount() { return 0; }
+            public virtual Root SelectedRoot() { return null; }
+
+            public void UpdatePage()
+            {
+                ButtonStringBuilder();
+                FormattedSplashStringBuilder(PageBuilder());
+            }
+            void ButtonStringBuilder()
+            {
+                ButtonBuilder.Clear();
+                ButtonBuilder.Append($"= Inputs: [{GetCurrentGuiMode()}] =\n");
+
+                int offset = AlternateMode ? 10 : 0;
+
+                for (int i = 0; i <= 10; i++)
+                    if (Buttons.ContainsKey((GUIKey)(i + offset)))
+                        ButtonBuilder.Append($"{i} - {Buttons[(GUIKey)(i + offset)].Name}\n");
+
+                offset = 20;
+
+                for (int i = 0; i <= InputLabels.Length; i++)
+                    if (Buttons.ContainsKey((GUIKey)(i + offset)))
+                        ButtonBuilder.Append($"{InputLabels[i]} - {Buttons[(GUIKey)(i + offset)].Name}\n");
+
+            }
+            void FormattedSplashStringBuilder(string[] input)
+            {
+                if (input == null)
+                    return;
+
+                SplashBuilder.Clear();
+                LineBufferSize = LineTotalCount - HeaderSize;
+                int startIndex = CursorIndex - (LineBufferSize / 2);
+                startIndex = startIndex < 0 ? 0 : startIndex;
+
+                for (int i = 0; i < HeaderSize; i++)
+                    SplashBuilder.Append($"{input[i]}\n");
+
+                if (!CapLines || LineBufferSize < 1)
+                    for (int i = HeaderSize; i < input.Length; i++)
+                        SplashBuilder.Append(input[i] + "\n");
+                else
+                    for (int i = startIndex; i < startIndex + LineBufferSize && i + HeaderSize < input.Length; i++)
+                        SplashBuilder.Append(input[i + HeaderSize] + "\n");
+            }
+
+        }
+        class Button
+        {
+            public string Name;
+            ButtonEvent Event;
+            public Button(string name, ButtonEvent @event)
+            {
+                Name = name;
+                Event = @event;
+            }
+            public void Trigger() { Event(); }
+        }
+        #endregion
+
+        #region MECHANICAL
+        class Functional : Root
+        {
+            IMyFunctionalBlock FuncBlock;
+            public Functional(IMyFunctionalBlock funcBlock) : base () { FuncBlock = funcBlock; }
+            public Functional(IMyFunctionalBlock funcBlock, RootData data) : base (data) { FuncBlock = funcBlock; }
+
+            public bool Save()
+            {
+                if (FuncBlock == null)
+                    return false;
+
+                FuncBlock.CustomData = SaveData();
+                return true;
+            }
+        }
+        class Joint : Functional
         {
             public int FootIndex;
+            public int SyncIndex;
+            public int OverrideIndex = -1;
             public int GripDirection;
             public bool LargeGrid;
             public IMyMechanicalConnectionBlock Connection;
@@ -530,6 +1589,7 @@ namespace IngameScript
             // Ze Maths
             public int CorrectionDir;
 
+            public float CurrentForce;
             public double PlaneCorrection;
             public double AnimTarget;
             public double ActiveTarget;
@@ -540,67 +1600,70 @@ namespace IngameScript
             public double LastPosition;
 
             public Vector3 PlanarDots;
+            public JointSet Parent => GetJointSet(ParentIndex);
 
-            public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data) : base(data.Root)
+            public Joint(IMyMechanicalConnectionBlock mechBlock, JointData data) : base(mechBlock, data.Root)
             {
                 StaticDlog("Joint Constructor:");
                 LargeGrid = mechBlock.BlockDefinition.ToString().Contains("Large");
                 Connection = mechBlock;
                 Connection.Enabled = true;
                 FootIndex = data.FootIndex;
+                SyncIndex = data.SyncIndex;
                 GripDirection = data.GripDirection;
                 TAG = data.TAG;
-                SetForce(true);
+                //SetForce(true);
             }
 
-            public Joint(Program program, IMyMechanicalConnectionBlock mechBlock) : base(/*mechBlock.CustomData,*/ program)
+            public Joint(IMyMechanicalConnectionBlock mechBlock) : base(mechBlock)
             {
                 LargeGrid = mechBlock.BlockDefinition.ToString().Contains("Large");
                 Connection = mechBlock;
                 Connection.Enabled = true;
-                SetForce(true);
+                BUILT = Load(mechBlock == null ? null : mechBlock.CustomData);
+                StaticDlog("Force Set!");
             }
             public bool IsAlive()
             {
                 try { return Connection.IsWorking; }
                 catch { return false; }
             }
-            public void SetForce(bool max)
+            public virtual void Sync()
+            {
+
+            }
+            public virtual void SetForce(bool max)
             {
                 if (Connection == null)
                     return;
-                float maxForce = TorqueMax();
-                Connection.SetValue("Torque", max ? maxForce : maxForce * ForceMin);
-            }
-            public override bool Save()
-            {
-                if (Connection == null)
-                    return false;
 
-                Connection.CustomData = SaveData();
-                return true;
+                CurrentForce = TorqueMax();
+                CurrentForce = max ? CurrentForce : CurrentForce * ForceMin;
             }
-            public override bool Load(string[] data)
+            protected override bool Load(string[] data)//, Option option = null)
             {
                 if (!base.Load(data))
                     return false;
 
                 try
                 {
-                    FootIndex = int.Parse(data[4]);
-                    GripDirection = int.Parse(data[5]);
-
+                    FootIndex = int.Parse(data[(int)PARAM.fIX]);
+                    GripDirection = int.Parse(data[(int)PARAM.GripDirection]);
+                    SyncIndex = int.Parse(data[(int)PARAM.sIX]);
                 }
                 catch
                 {
                     FootIndex = -1;
                     GripDirection = 0;
+                    SyncIndex = -1;
                 }
                 return true;
             }
-            public override string SaveData()
+            protected override void saveData(string[] buffer)
             {
-                return $"{base.SaveData()}:{FootIndex}:{GripDirection}";
+                buffer[(int)PARAM.fIX] = FootIndex.ToString();
+                buffer[(int)PARAM.sIX] = SyncIndex.ToString();
+                buffer[(int)PARAM.GripDirection] = GripDirection.ToString();
             }
             public void LoadJointFrames(JointFrame zero, JointFrame one, bool forward, bool interrupt)
             {
@@ -613,12 +1676,6 @@ namespace IngameScript
             }
             public void UpdateJoint(bool activeTargetTracking)
             {
-                if (!IsAlive())
-                {
-                    TargetThreshold = true;
-                    return;
-                }
-
                 UpdateLiteralVelocity();
                 if (!activeTargetTracking)
                 {
@@ -630,7 +1687,7 @@ namespace IngameScript
 
                 UpdateCorrectionDisplacement();
 
-                if (Planeing)
+                if (!(this is Piston) && Planeing)
                 {
                     UpdatePlaneDisplacement();
                     UpdateCorrectionDisplacement();
@@ -642,7 +1699,7 @@ namespace IngameScript
             void UpdateLiteralVelocity()
             {
                 double currentPosition = CurrentPosition();
-                LiteralVelocity = ((currentPosition - LastPosition) / 360) / Program.Runtime.TimeSinceLastRun.TotalMinutes;
+                LiteralVelocity = ((currentPosition - LastPosition) / 360) / GetGridTimeSinceLastRun().TotalMinutes;
                 LastPosition = currentPosition;
             }
             void UpdateStatorVelocity(bool active)
@@ -652,14 +1709,14 @@ namespace IngameScript
                     OldVelocity = TargetVelocity;
                     if (TAG == "G")
                     {
-                        TargetVelocity = Program.MaxSpeed.MyValue() * (Gripping ? -1 : 1); // Needs changing!
+                        TargetVelocity = MaxSpeed.MyValue() * GripDirection * (Gripping ? -1 : 1); // Needs changing!
                     }
                     else
                     {
                         TargetVelocity = CorrectionDir * DEG2VEL * (CorrectionMag);
-                        TargetVelocity = Math.Abs(TargetVelocity - OldVelocity) > Program.MaxAcceleration.MyValue() ? OldVelocity + (Program.MaxAcceleration.MyValue() * Math.Sign(TargetVelocity - OldVelocity)) : TargetVelocity;
-                        TargetVelocity = Math.Abs(TargetVelocity) > Program.MaxSpeed.MyValue() ? Program.MaxSpeed.MyValue() * CorrectionDir : TargetVelocity;
-                        TargetVelocity = Math.Abs(TargetVelocity) > MIN_VEL ? TargetVelocity : 0 ;
+                        TargetVelocity = Math.Abs(TargetVelocity - OldVelocity) > MaxAcceleration.MyValue() ? OldVelocity + (MaxAcceleration.MyValue() * Math.Sign(TargetVelocity - OldVelocity)) : TargetVelocity;
+                        TargetVelocity = Math.Abs(TargetVelocity) > MaxSpeed.MyValue() ? MaxSpeed.MyValue() * CorrectionDir : TargetVelocity;
+                        TargetVelocity = Math.Abs(TargetVelocity) > MIN_VEL ? TargetVelocity : 0;
                     }
                 }
                 else
@@ -669,7 +1726,7 @@ namespace IngameScript
             }
             public bool DisThreshold()
             {
-                return CorrectionMag < Program.FrameThreshold.MyValue();
+                return CorrectionMag < FrameThreshold.MyValue();
             }
             public void UpdatePlanarDot(MatrixD plane)
             {
@@ -689,9 +1746,10 @@ namespace IngameScript
             {
                 return Connection.GetValueFloat("UpperLimit");
             }
-            public float TorqueMax()
+            public virtual float TorqueMax()
             {
-                return Connection.GetMaximum<float>("Torque");
+                return 0;
+                //return Connection.GetMaximum<float>("Torque");
             }
             public virtual Vector3 ReturnRotationAxis()
             {
@@ -709,9 +1767,7 @@ namespace IngameScript
                 if (!Planeing)
                     return;
 
-                //PlaneCorrection = Math.Abs(PlaneCorrection) > CorrectionMag ? PlaneCorrection - (CorrectionMag * CorrectionDir) : PlaneCorrection;
                 PlaneCorrection -= (CorrectionMag * CorrectionDir);
-                //PlaneCorrection = PlaneCorrection > 0 ? PlaneCorrection : 0;
                 ActiveTarget += PlaneCorrection;
             }
             public virtual void UpdateCorrectionDisplacement()
@@ -726,46 +1782,82 @@ namespace IngameScript
         class Piston : Joint
         {
             public IMyPistonBase PistonBase;
-            public IMyMotorStator Reference;
+            public Joint Reference;
 
             public Piston(IMyPistonBase pistonBase, JointData data) : base(pistonBase, data)
             {
                 PistonBase = pistonBase;
             }
-            public Piston(Program program, IMyPistonBase pistonBase) : base(program, pistonBase)
+            public Piston(IMyPistonBase pistonBase) : base(pistonBase)
             {
                 PistonBase = pistonBase;
             }
+            public override void Sync()
+            {
+                Reference = Parent.GetJoint(SyncIndex);
+            }
 
+            public override void SetForce(bool max)
+            {
+                base.SetForce(max);
+                PistonBase.SetValue("MaxImpulseAxis", CurrentForce);
+            }
+            public override float TorqueMax()
+            {
+                return PistonBase.GetMaximum<float>("MaxImpulseAxis");
+            }
             public override double CurrentPosition()
             {
-                return Reference.Angle * RAD2DEG;
+                StreamDlog($"Reference Exists: {Reference != null}\n" +
+                    $"SyncIndex: {SyncIndex}");
+
+                if (Reference != null)
+                {
+                    StreamDlog("Piston has Reference!");
+                    double currentPosition = Reference.CurrentPosition();
+                    StreamDlog($"CurrentPosition of reference: {currentPosition}");
+                    return currentPosition;
+                }
+
+                return base.CurrentPosition();
             }
             public override float ClampTargetValue(float target)
             {
-                target = target < 0 ? 0 : target;
-                target = target > 10 ? 10 : target;
-                return target;
-            }
-            public override void LerpAnimationFrame(float lerpTime)
-            {
-                //base.LerpAnimationFrame(lerpTime);
+                if (Reference != null)
+                {
+                    if (Reference is Hinge)
+                        return ((Hinge)Reference).ClampTargetValue(target);
+                    if (Reference is Rotor)
+                        return ((Rotor)Reference).ClampTargetValue(target);
+                }
 
-                AnimTarget = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
+                return base.ClampTargetValue(target);
+            }
+
+            public override Vector3 ReturnRotationAxis()
+            {
+                return -PistonBase.WorldMatrix.Forward;
             }
             public override void UpdateCorrectionDisplacement()
             {
-                CorrectionMag = ActiveTarget - PistonBase.CurrentPosition;
-                CorrectionDir = Math.Sign(CorrectionMag);
-                CorrectionMag = Math.Abs(CorrectionMag);
-            }
-            public override void UpdatePlaneDisplacement()
-            {
-                base.UpdatePlaneDisplacement();
+                if (Reference != null)
+                {
+                    Vector3 cross = Vector3.Cross(Reference.ReturnRotationAxis(), ReturnRotationAxis());
+                    Vector3 b_pos = PistonBase.GetPosition();
+                    Vector3 m_pos = ((PistonBase.CurrentPosition / 2) * PistonBase.WorldMatrix.Forward) + b_pos;
+                    Vector3 displace = Reference.Connection.GetPosition() - m_pos;
+                    float dot = Vector3.Dot(cross, displace);
+                    CorrectionMag = Reference.CorrectionMag;
+                    CorrectionDir = Reference.CorrectionDir * Math.Sign(dot);
+                    return;
+                }
 
-                ActiveTarget = ActiveTarget > 10 ? 10 : ActiveTarget;
-                ActiveTarget = ActiveTarget < 0 ? 0 : ActiveTarget;
+                base.UpdateCorrectionDisplacement();
             }
+            //public override void UpdatePlaneDisplacement()
+            //{
+            //    
+            //}
 
         }
         class Rotor : Joint
@@ -777,11 +1869,19 @@ namespace IngameScript
                 Stator = stator;
             }
 
-            public Rotor(Program program, IMyMotorStator stator) : base(program, stator)
+            public Rotor(IMyMotorStator stator) : base(stator)
             {
                 Stator = stator;
             }
-
+            public override void SetForce(bool max)
+            {
+                base.SetForce(max);
+                Connection.SetValue("Torque", CurrentForce);
+            }
+            public override float TorqueMax()
+            {
+                return Connection.GetMaximum<float>("Torque");
+            }
             public override Vector3 ReturnRotationAxis()
             {
                 return LargeGrid ? Stator.WorldMatrix.Up : Stator.WorldMatrix.Down;
@@ -838,9 +1938,18 @@ namespace IngameScript
             {
                 Stator = stator;
             }
-            public Hinge(Program program, IMyMotorStator stator) : base(program, stator)
+            public Hinge(IMyMotorStator stator) : base(stator)
             {
                 Stator = stator;
+            }
+            public override void SetForce(bool max)
+            {
+                base.SetForce(max);
+                Connection.SetValue("Torque", CurrentForce);
+            }
+            public override float TorqueMax()
+            {
+                return Connection.GetMaximum<float>("Torque");
             }
             public override Vector3 ReturnRotationAxis()
             {
@@ -878,6 +1987,76 @@ namespace IngameScript
             }
         }
 
+        class Magnet : Functional
+        {
+            public int FootIndex;
+            public IMyLandingGear Gear;
+            public Magnet(RootData root, IMyLandingGear gear, int footIndex) : base(gear, root)
+            {
+                TAG = MagnetTag;
+                FootIndex = footIndex;
+                Gear = gear;
+            }
+            public Magnet(IMyLandingGear gear) : base(gear)
+            {
+                Gear = gear;
+                BUILT = Load(gear == null ? null : gear.CustomData);
+            }
+
+            protected override bool Load(string[] data)//, Option option = null)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { FootIndex = int.Parse(data[(int)PARAM.fIX]); }
+                catch { FootIndex = -1; }
+                return true;
+            }
+
+
+            protected override void saveData(string[] buffer)
+            {
+                buffer[(int)PARAM.fIX] = FootIndex.ToString();
+            }
+
+            public void InitializeGear()
+            {
+                Gear.AutoLock = false;
+                Gear.Enabled = true;
+            }
+
+            public void ToggleLock(bool locking)
+            {
+                Gear.AutoLock = locking;
+                if (locking)
+                {
+                    Gear.Lock();
+                    Gear.AutoLock = true;
+                }
+                else
+                {
+                    Gear.Unlock();
+                    Gear.AutoLock = false;
+                }
+
+            }
+            public bool IsAlive()
+            {
+                try { return Gear.IsWorking; }
+                catch { return false; }
+            }
+            public bool IsTouching()
+            {
+                return Gear.LockMode == LandingGearMode.ReadyToLock;
+            }
+            public bool IsLocked()
+            {
+                return Gear.LockMode == LandingGearMode.Locked;
+            }
+        }
+        #endregion
+
+        #region ANIMATION
         class JointSet : Root
         {
             public string GroupName;
@@ -886,6 +2065,8 @@ namespace IngameScript
             public List<Root> Feet = new List<Root>();
             public List<Root> Joints = new List<Root>();
             public List<Root> Sequences = new List<Root>();
+
+            public KeyFrame ZeroFrame = null;
 
             public MatrixD TargetPlane;
             public MatrixD TurnPlane;
@@ -903,12 +2084,21 @@ namespace IngameScript
                 TAG = JointSetTag;
                 Plane = plane;
                 GroupName = groupName;
+                GenerateZeroFrame();
             }
 
-            public JointSet(Program program, IMyTerminalBlock plane, List<Foot> buffer) : base(program)
+            public JointSet(string input, IMyTerminalBlock plane, List<Foot> buffer) : base()
             {
                 Plane = plane;
                 Feet.AddRange(buffer);
+                BUILT = Load(input);
+            }
+
+            public void GenerateZeroFrame()
+            {
+                //PROG.LibraryBuilder.Add("Generating Zero Frame!");
+                ZeroFrame = NewKeyFrame(ParentData("Zero Frame"), this);
+                //PROG.LibraryBuilder.Add("Generated!");
             }
 
             public Foot GetFoot(int index)
@@ -929,6 +2119,8 @@ namespace IngameScript
                     return null;
                 return (Sequence)Sequences[index];
             }
+
+
             public override void Insert(int index, Root root)
             {
                 if (root is Sequence)
@@ -957,18 +2149,18 @@ namespace IngameScript
                 Joints.Sort(MySort);
                 Sequences.Sort(MySort);
             }
-            public override bool Load(string[] data)
+            protected override bool Load(string[] data)//, Option option = null)
             {
                 if (!base.Load(data))
                     return false;
 
-                try { GroupName = data[4]; }
+                try { GroupName = data[(int)PARAM.GroupName]; }
                 catch { GroupName = null; }
                 return true;
             }
-            public override string SaveData()
+            protected override void saveData(string[] buffer)
             {
-                return $"{base.SaveData()}:{(GroupName == null ? "" : GroupName)}";
+                buffer[(int)PARAM.GroupName] = GroupName;
             }
 
             public bool UpdateJoints()
@@ -977,7 +2169,10 @@ namespace IngameScript
 
                 foreach (Joint joint in Joints)
                 {
-                    joint.UpdateJoint(Program.StatorTarget.MyState());
+                    if (!joint.IsAlive())
+                        continue;
+
+                    joint.UpdateJoint(StatorTarget.MyState());
                     if (withinThreshold)
                         withinThreshold = joint.TargetThreshold;
                 }
@@ -995,13 +2190,14 @@ namespace IngameScript
                 bool oldState = Locked;
                 Foot locked = GetFoot(LockedIndex);
                 Locked = locked != null && locked.CheckLocked();
-                bool changed = oldState != Locked;
+
 
                 if (!Locked && ReleaseTimer <= 0) // TouchDown
                     NewLockCandidate();
 
-                //if (changed)
-                    UnlockOtherFeet();
+                UnlockOtherFeet();
+
+                bool changed = oldState != Locked;
 
                 return changed;
             }
@@ -1019,7 +2215,7 @@ namespace IngameScript
                     StepInterrupt = false;
                     return false;
                 }
-                    
+
                 StepInterrupt = true;
 
                 if (touch) // Initial contact
@@ -1046,6 +2242,7 @@ namespace IngameScript
             public void InitFootStatus()
             {
                 NewLockCandidate();
+                UnlockOtherFeet();
 
                 foreach (Foot foot in Feet)
                     foot.GearInit();
@@ -1075,7 +2272,8 @@ namespace IngameScript
             }
             void NewLockCandidate()
             {
-                StreamDlog("New Lock Candidate...");
+
+                //StreamDlog("New Lock Candidate...");
                 for (int i = 0; i < Feet.Count; i++)
                 {
                     Foot check = GetFoot(i);
@@ -1083,19 +2281,36 @@ namespace IngameScript
                     {
                         check.ToggleLock(true);
                         LockedIndex = i;
+                        Locked = true;
 
-                        if (Program.CurrentWalk != null)
-                            Program.CurrentWalk.StepDelay = true;
+                        if (CurrentWalk != null)
+                        {
+                            CurrentWalk.LoadKeyFrames(true, check.LockIndex);
+                            CurrentWalk.StepDelay = true;
+                        }
+
+
                         return;
                     }
                 }
+
+                Locked = false;
                 LockedIndex = -1;
             }
-            
-            public void ZeroJointSet()
+
+            public void SyncJoints()
             {
                 foreach (Joint joint in Joints)
-                    joint.OverwriteAnimTarget(0);
+                    joint.Sync();
+            }
+            public void ZeroJointSet(KeyFrame frame = null)
+            {
+                if (frame == null)
+                    foreach (Joint joint in Joints)
+                        joint.OverwriteAnimTarget(0);
+                else
+                    foreach (JointFrame jFrame in frame.Jframes)
+                        jFrame.Joint.OverwriteAnimTarget(jFrame.MySetting.MyValue());
             }
             public void SnapShotPlane()
             {
@@ -1117,7 +2332,7 @@ namespace IngameScript
             {
                 playerInput *= PlaneScalar;
 
-                BufferPlane = MatrixD.CreateFromYawPitchRoll(playerInput.X, playerInput.Y, playerInput.Z);
+                BufferPlane = MatrixD.CreateFromYawPitchRoll(playerInput.Y, playerInput.X, playerInput.Z);
 
                 TargetPlane = MatrixD.Multiply(BufferPlane, TargetPlane);
 
@@ -1125,19 +2340,17 @@ namespace IngameScript
 
                 MatrixD.GetEulerAnglesXYZ(ref BufferPlane, out PlaneBuffer);
             }
-            void UpdateTurnBuffer(float playerTurn)
+            void UpdateTurnBuffer(double playerTurn)
             {
-                playerTurn *= TurnScalar;
-
-                TurnBuffer.Y = playerTurn;
+                TurnBuffer.Y = playerTurn * TurnScalar;
             }
             public bool UpdatePlanars()
             {
                 if (Plane == null)
                     return false;
 
-                UpdatePlaneBuffer(Program.RotationBuffer);
-                UpdateTurnBuffer(Program.TurnBuffer);
+                UpdatePlaneBuffer(InputRotationBuffer);
+                UpdateTurnBuffer(InputTurnBuffer);
 
                 bool safety = false;
                 for (int i = 0; i < 3; i++)
@@ -1171,8 +2384,8 @@ namespace IngameScript
 
                                 if (plane.TAG == TurnTag && !foot.Locked)
                                 {
-                                    //StreamDlog("Turning");
                                     plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, TurnBuffer);
+                                    DebugBinStream.Append($"PlaneCorrection Lifted {i}: {plane.PlaneCorrection}\n");
                                 }
 
                                 else
@@ -1210,86 +2423,14 @@ namespace IngameScript
                 return output;
             }
         }
-        class Magnet : Root
-        {
-            public int FootIndex;
-            public IMyLandingGear Gear;
-            public Magnet(RootData root, IMyLandingGear gear, int footIndex) : base(root)
-            {
-                TAG = MagnetTag;
-                FootIndex = footIndex;
-                Gear = gear;
-            }
-            public Magnet(Program program, IMyLandingGear gear) : base(/*gear.CustomData,*/ program)
-            {
-                Gear = gear;
-            }
-
-            public override bool Load(string[] data)
-            {
-                if (!base.Load(data))
-                    return false;
-
-                try { FootIndex = int.Parse(data[4]); }
-                catch { FootIndex = -1; }
-                return true;
-            }
-
-            public override bool Save()
-            {
-                if (Gear == null)
-                    return false;
-
-                Gear.CustomData = SaveData();
-                return true;
-            }
-
-            public override string SaveData()
-            {
-                return $"{base.SaveData()}:{FootIndex}";
-            }
-
-            public void InitializeGear()
-            {
-                Gear.AutoLock = false;
-                Gear.Enabled = true;
-            }
-
-            public void ToggleLock(bool locking)
-            {
-                Gear.AutoLock = locking;
-                if (locking)
-                {
-                    Gear.Lock();
-                    Gear.AutoLock = true;
-                }  
-                else
-                {
-                    Gear.Unlock();
-                    Gear.AutoLock = false;
-                }
-                    
-            }
-            public bool IsAlive()
-            {
-                try { return Gear.IsWorking; }
-                catch { return false; }
-            }
-            public bool IsTouching()
-            {
-                return Gear.LockMode == LandingGearMode.ReadyToLock;
-            }
-            public bool IsLocked()
-            {
-                return Gear.LockMode == LandingGearMode.Locked;
-            }
-        }
+        
         class Foot : Root
         {
             public List<Root> Toes = new List<Root>();
             public List<Root> Planars = new List<Root>();
             public List<Root> Magnets = new List<Root>();
 
+            public int LockIndex;
             public bool Locked = false;
             public bool Planeing;
             public Vector3 PlanarRatio;
@@ -1299,9 +2440,10 @@ namespace IngameScript
                 TAG = FootTag;
             }
 
-            public Foot(Program program) : base(/*input,*/ program)
+            public Foot(string input) : base()
             {
                 StaticDlog("Foot Constructor:");
+                BUILT = Load(input);
             }
 
             public Joint GetToe(int index)
@@ -1347,7 +2489,7 @@ namespace IngameScript
                         break;
                     }
 
-                StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
+                //StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
                 return result;
             }
             public bool CheckLocked()
@@ -1360,7 +2502,7 @@ namespace IngameScript
                         break;
                     }
 
-                StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
+                //StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
                 return result;
             }
             void ToggleGrip(bool gripping = true)
@@ -1380,7 +2522,7 @@ namespace IngameScript
                 foreach (Joint plane in Planars)
                     if (plane != null)
                     {
-                        plane.Planeing = (Locked || plane.TAG == TurnTag) && Planeing;
+                        plane.Planeing = (Locked || (plane.TAG == TurnTag && Strafing.MyState())) && Planeing;
                     }
             }
             public void GenerateAxisMagnitudes(MatrixD plane)
@@ -1402,6 +2544,21 @@ namespace IngameScript
                 for (int i = 0; i < 3; i++)
                     PlanarRatio.SetDim(i, 1 / PlanarRatio.GetDim(i));
             }
+
+            protected override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { LockIndex = int.Parse(data[(int)PARAM.lIX]); }
+                catch { LockIndex = -1; }
+                return true;
+            }
+
+            protected override void saveData(string[] buffer)
+            {
+                buffer[(int)PARAM.lIX] = LockIndex.ToString();
+            }
         }
         class Animation : Root
         {
@@ -1412,29 +2569,27 @@ namespace IngameScript
 
             }
 
-            public Animation(Program program) : base(program)
+            public Animation() : base()
             {
-
+                
             }
 
             public virtual void GenerateSetting(float init)
             {
 
             }
-            public override bool Load(string[] data)
+            protected override bool Load(string[] data)//, Option option = null)
             {
                 if (!base.Load(data))
                     return false;
 
                 StaticDlog($"Anim Load:{TAG}");
 
-                try { GenerateSetting(float.Parse(data[4])); }
-                catch { GenerateSetting(0); }
                 return true;
             }
-            public override string SaveData()
+            protected override void saveData(string[] buffer)
             {
-                return $"{base.SaveData()}:{(MySetting == null ? 0 : MySetting.MyValue())}";
+                buffer[(int)PARAM.SettingInit] = (MySetting == null ? 0 : MySetting.MyValue()).ToString();
             }
         }
         class JointFrame : Animation
@@ -1451,18 +2606,29 @@ namespace IngameScript
                     MySetting.Change((int)MySetting.MyValue());
                 }
             }
-            public JointFrame(Program program, Joint joint) : base(program)
+            public JointFrame(string input, Joint joint) : base()
             {
-                StaticDlog("Jframe Constructor:");
                 Joint = joint;
+                BUILT = Load(input);
+            }
+            protected override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { GenerateSetting(float.Parse(data[(int)PARAM.SettingInit])); }
+                catch { GenerateSetting(0); }
+
+                return true;
             }
             public override void GenerateSetting(float init)
             {
-                Program.Static($"jFrame {Name} GeneratingSetting...\n");
-                MySetting = new Setting(Program, "Joint Position", "The animation value of the joint associated joint within a given keyFrame.",
-                    init, Program.Snapping ? 1 : 0.1f,
+                Static($"jFrame {Name} GeneratingSetting...\n");
+                MySetting = new Setting("Joint Position", "The animation value of the joint associated joint within a given keyFrame.",
+                    init, Snapping ? 1 : 0.1f,
                     (Joint == null ? 0 : Joint.LimitMax()),
-                    (Joint == null ? 0 : Joint.LimitMin()));
+                    (Joint == null ? 0 : Joint.LimitMin()),
+                    SnappingIncrement);
             }
             public void ChangeStatorLerpPoint(float value)
             {
@@ -1472,31 +2638,50 @@ namespace IngameScript
         class KeyFrame : Animation
         {
             public List<Root> Jframes = new List<Root>();
-            public JointFrame GetJointFrame(int index)
+
+            public KeyFrame(RootData root, List<Root> jFrames = null) : base(root)
+            {
+                TAG = KframeTag;
+                Jframes = jFrames != null ? jFrames : new List<Root>();
+                GenerateSetting(FrameLengthDef);
+            }
+            public KeyFrame(string input, List<JointFrame> buffer) : base()
+            {
+                Jframes.AddRange(buffer);
+                BUILT = Load(input);
+            }
+            protected override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { GenerateSetting(float.Parse(data[(int)PARAM.SettingInit])); }
+                catch { GenerateSetting(0); }
+
+                return true;
+            }
+            public JointFrame GetJointFrameByJointIndex(int index)
+            {
+                return GetJointFrameByFrameIndex(Jframes.FindIndex(x => x.MyIndex == index));
+            }
+
+            public JointFrame GetJointFrameByFrameIndex(int index)
             {
                 if (index < 0 || index >= Jframes.Count)
                     return null;
                 return (JointFrame)Jframes[index];
             }
-            public KeyFrame(RootData root, List<Root> jFrames = null) : base(root)
-            {
-                TAG = KframeTag;
-                if (jFrames != null)
-                    Jframes = jFrames;
-                GenerateSetting(FrameLengthDef);
-            }
-            public KeyFrame(Program program, List<JointFrame> buffer) : base(program)
-            {
-                Jframes.AddRange(buffer);
-            }
-
             public override void ReIndex()
             {
+                //for (int i = 0; i < Jframes.Count; i++)
+                //    Jframes[i].MyIndex = i;
+
                 Jframes.Sort(MySort);
             }
             public override void GenerateSetting(float init)
             {
-                MySetting = new Setting(Program, "Frame Length", "The time that will be displaced between this frame, and the one an index ahead", init, FrameIncrmentMag, FrameLengthCap, FrameLengthMin); //Inverse for accelerated effect
+                MySetting = new Setting("Frame Length", "The time that will be displaced between this frame, and the one an index ahead",
+                    init, FrameIncrmentMag, FrameLengthCap, FrameLengthMin, FrameDurationIncrement); //Inverse for accelerated effect
             }
         }
         class Sequence : Animation
@@ -1518,10 +2703,11 @@ namespace IngameScript
                 JointSet = set;
                 GenerateSetting(ClockSpeedDef);
             }
-            public Sequence(Program program, JointSet set, List<KeyFrame> buffer) : base(program)
+            public Sequence(string input, JointSet set, List<KeyFrame> buffer) : base()
             {
                 JointSet = set;
                 Frames.AddRange(buffer);
+                BUILT = Load(input);
             }
             public KeyFrame GetKeyFrame(int index)
             {
@@ -1530,6 +2716,21 @@ namespace IngameScript
                 return (KeyFrame)Frames[index];
             }
 
+            protected override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { GenerateSetting(float.Parse(data[(int)PARAM.SettingInit])); }
+                catch { GenerateSetting(0); }
+
+                return true;
+            }
+            public void OverrideSet()
+            {
+                foreach (Joint joint in JointSet.Joints)
+                    joint.OverrideIndex = MyIndex;
+            }
             public override void Insert(int index, Root root)
             {
                 if (root is KeyFrame)
@@ -1548,18 +2749,20 @@ namespace IngameScript
             }
             public override void ReIndex()
             {
-                for (int i = 0; i < Frames.Count; i++)
-                    Frames[i].MyIndex = i;
+                //for (int i = 0; i < Frames.Count; i++)
+                //    Frames[i].MyIndex = i;
+
+                Frames.Sort(MySort);
             }
             public override void GenerateSetting(float init)
             {
-                MySetting = new Setting(Program, "Clock Speed", "Speed at which the sequence will interpolate between frames", init, ClockIncrmentMag, ClockSpeedCap, ClockSpeedMin);
+                MySetting = new Setting("Clock Speed", "Speed at which the sequence will interpolate between frames", init, ClockIncrmentMag, ClockSpeedCap, ClockSpeedMin, SequenceSpeedIncrement);
             }
 
             public void ZeroSequence()
             {
                 RisidualClockMode = CurrentClockMode;
-                LoadKeyFrames(false, true);
+                LoadKeyFrames(false, 0);
                 CurrentClockMode = ClockMode.PAUSE;
                 CurrentClockTime = 0;
             }
@@ -1589,15 +2792,18 @@ namespace IngameScript
 
                 return true;
             }
-            public bool UpdateSequence()
+            public bool UpdateSequence(bool anim)
             {
                 if (CurrentFrames == null ||
                     CurrentClockMode == ClockMode.PAUSE)
                     return false;
 
-                StreamDlog("Update Sequence...");
+                //StreamDlog("Update Sequence...");
+                if (anim)
+                    UpdateSequenceClock();
+                else
+                    UpdateTriggers();
 
-                UpdateTriggers();
                 LerpFrame(CurrentClockTime);
                 return true;
             }
@@ -1610,13 +2816,7 @@ namespace IngameScript
                 if (name == null)
                     name = $"Frame_{index}";
 
-                KeyFrame newKFrame = new KeyFrame(Parent(name, index));
-
-                for (int i = 0; i < JointSet.Joints.Count; i++)
-                {
-                    RootData jfRoot = newKFrame.Parent(JointSet.Joints[i].Name, i);
-                    newKFrame.Jframes.Add(new JointFrame(jfRoot, JointSet.GetJoint(i), snapping));
-                }
+                KeyFrame newKFrame = NewKeyFrame(ParentData(name, index), JointSet);
 
                 Insert(index, newKFrame);
                 return true;
@@ -1633,14 +2833,15 @@ namespace IngameScript
 
             void UpdateTriggers()
             {
-                //if (Program.WithinTargetThreshold)
-                UpdateSequenceClock();
+                if (WithinTargetThreshold)
+                    UpdateSequenceClock();
 
                 if (CheckFrameTimer())
                     LoadKeyFrames(false);
 
                 UpdateStepDelay();
-                if (!Program.IgnoreFeet.MyState() && !StepDelay && JointSet.CheckStep())
+
+                if (!IgnoreFeet.MyState() && !StepDelay && JointSet.CheckStep())
                 {
 
                     StepDelay = true;
@@ -1661,14 +2862,14 @@ namespace IngameScript
 
                 float triggerTime = CurrentClockMode != ClockMode.REV ? CurrentClockTime : 1 - CurrentClockTime;
 
-                if (triggerTime >= Program.StepThreshold.MyValue())
+                if (triggerTime >= StepThreshold.MyValue())
                     StepDelay = false;
             }
             void LerpFrame(float lerpTime)
             {
                 foreach (Joint joint in JointSet.Joints)
                 {
-                    if (!joint.IsAlive())
+                    if (!joint.IsAlive() || joint.OverrideIndex != MyIndex)
                         continue;
 
                     joint.LerpAnimationFrame(lerpTime);
@@ -1677,7 +2878,7 @@ namespace IngameScript
 
             bool CheckFrameTimer()
             {
-                if (!Program.WithinTargetThreshold)
+                if (!WithinTargetThreshold)
                     return false;
                 if (CurrentClockMode == ClockMode.FOR && CurrentClockTime == 1)
                     return true;
@@ -1685,27 +2886,23 @@ namespace IngameScript
                     return true;
                 return false;
             }
-            bool LoadKeyFrames(bool interrupt, bool reset = false)
+            public bool LoadKeyFrames(bool footInterrupt, int index = -1)
             {
                 bool forward = CurrentClockMode != ClockMode.REV;
                 CurrentClockTime = forward ? 0 : 1;
 
-                if (reset)
-                {
-                    CurrentFrames[0] = null;
-                    CurrentFrames[1] = null;
-                }
+                int indexZero = CurrentFrames[0] == null || index != -1 ?
+                    forward ? index : NextFrameIndex(index) :
+                    NextFrameIndex(CurrentFrames[0].MyIndex);
 
-                int indexZero = CurrentFrames[0] == null ? 0 : CurrentFrames[0].MyIndex;
-                int indexOne = CurrentFrames[1] == null ? 0 : CurrentFrames[1].MyIndex;
+                int indexOne = CurrentFrames[1] == null || index != -1 ?
+                    forward ? NextFrameIndex(index) : index :
+                    NextFrameIndex(CurrentFrames[1].MyIndex);
 
-                int zero = forward ? indexOne : NextFrameIndex(indexZero);
-                int one = forward ? NextFrameIndex(indexOne) : indexZero;
+                CurrentFrames[0] = GetKeyFrame(indexZero);
+                CurrentFrames[1] = GetKeyFrame(indexOne);
 
-                CurrentFrames[0] = GetKeyFrame(zero);
-                CurrentFrames[1] = GetKeyFrame(one);
-
-                return LoadJointFrames(forward, interrupt);
+                return LoadJointFrames(forward, footInterrupt);
             }
             bool LoadJointFrames(bool forward = true, bool interrupt = false)
             {
@@ -1713,10 +2910,16 @@ namespace IngameScript
                     return false;
 
                 JointFrame zero, one;
+                Joint joint;
+
                 for (int i = 0; i < JointSet.Joints.Count; i++)
                 {
-                    zero = CurrentFrames[0] == null ? null : CurrentFrames[0].GetJointFrame(i);
-                    one = CurrentFrames[1] == null ? null : CurrentFrames[1].GetJointFrame(i);
+                    joint = JointSet.GetJoint(i);
+                    if (joint is Piston || joint.OverrideIndex != MyIndex || !joint.IsAlive())
+                        continue;
+
+                    zero = CurrentFrames[0] == null ? null : CurrentFrames[0].GetJointFrameByFrameIndex(i);
+                    one = CurrentFrames[1] == null ? null : CurrentFrames[1].GetJointFrameByFrameIndex(i);
                     JointSet.GetJoint(i).LoadJointFrames(zero, one, forward, interrupt);
                 }
                 return true;
@@ -1731,123 +2934,40 @@ namespace IngameScript
         }
         #endregion
 
-        #region GUI
-
-            #region GUI RESOURCES
-        List<IMyTextSurface> Screens = new List<IMyTextSurface>();
-        StringBuilder DebugBinStream = new StringBuilder();
-        StringBuilder DebugBinStatic = new StringBuilder();
-        StringBuilder DisplayManagerBuilder = new StringBuilder();
-        StringBuilder ButtonBuilder = new StringBuilder();
-        StringBuilder SplashBuilder = new StringBuilder();
-        StringBuilder InputReader = new StringBuilder();
-        StringBuilder SaveData = new StringBuilder();
         #endregion
 
-            #region GUI CONSTS
-        static readonly string[] MainMenuButtons =
-        {
-            "Controls",
-            "Info",
-            "Editor",
-            "Options",
-            "Save CustomData",
-            "Save ActiveData",
-            "Reload CustomData"
-        };
-        static readonly string[] InfoMenuButtons =
-        {
+        #region GUI
 
-        };
-        static readonly string[] CreateMenuButtons =
-        {
-            "Edit Menu",
+        #region GUI RESOURCES
+        static List<IMyTextSurface> Screens = new List<IMyTextSurface>();
+        static StringBuilder DebugBinStream = new StringBuilder();
+        static StringBuilder DebugBinStatic = new StringBuilder();
+        static StringBuilder DisplayManagerBuilder = new StringBuilder();
+        static StringBuilder ButtonBuilder = new StringBuilder();
+        static StringBuilder SplashBuilder = new StringBuilder();
+        static StringBuilder InputReader = new StringBuilder();
+        static StringBuilder SaveData = new StringBuilder();
+        static StringBuilder RootDataBuilder = new StringBuilder();
+        #endregion
 
-            "Load Item",
-            "Add Item",
-            "Insert Item",
-            "Delete Item",
-            "Rename Item",
-        };
-        static readonly string[] EditorMenuButtons =
-        {
-            "Create Menu",
-
-            "Increment",
-            "Decrement",
-            "Overwrite Value",
-            "Toggle Stator Target",
-        };
-        static readonly string[] ControlMenuButtons =
-        {
-            "Unlock both feet",
-            "Toggle Planeing",
-            "Toggle Pause",
-            "Toggle Direction",
-            "Zero out mech",
-        };
-        static readonly string[] OptionsMenuButtons =
-        {
-        };
-        static readonly string[][] AllButtons =
-        {
-            MainMenuButtons,
-            InfoMenuButtons,
-            CreateMenuButtons,
-            EditorMenuButtons,
-            ControlMenuButtons,
-            OptionsMenuButtons
-        };
-
-        static readonly string[] MainMenuInputs =
-        {
-            "Scroll Page"
-        };
-        static readonly string[] InfoMenuInputs =
-        {
-            "Scroll Page"
-        };
-        static readonly string[] CreateMenuInputs =
-        {
-            "Scroll List",
-            "Change Directory"
-        };
-        static readonly string[] EditorMenuInputs =
-        {
-            "Scroll List",
-            "Change Directory"
-        };
-        static readonly string[] ControlMenuInputs =
-        {
-            "Forward/Backward",
-            "Turn Foot left/Right",
-            "Roll Counter/Clock-Wise"
-        };
-        static readonly string[] OptionMenuInputs =
-        {
-            "Scroll Options",
-            "Adjust Option"
-        };
-        static readonly string[][] AllInputs =
-        {
-            MainMenuInputs,
-            InfoMenuInputs,
-            CreateMenuInputs,
-            EditorMenuInputs,
-            ControlMenuInputs,
-            OptionMenuInputs
-        };
+        #region GUI CONSTS
 
         static readonly string[] InputLabels =
         {
-            "w/s",
-            "a/d",
-            "q/e",
+            "right",
+            "left",
+            "up",
+            "down",
+            "backward",
+            "forward",
+            "roll right",
+            "roll left"
         };
+
         static readonly string[] Cursor = { "  ", "->" };
 
         #region INFO PANELS
-        const string MainText = "Mech Control v0.5\n\n" +
+        static readonly string MainText = $"Mech Control {VersionNumber}\n\n" +
             "This system requires 1 hotbar.\n" +
             "Please enter into each button\n" +
             "the following RuntimeArgument\n" +
@@ -1882,206 +3002,38 @@ namespace IngameScript
 
         #endregion
 
-            #region GUI BUILDERS
-        static string MatrixToString(MatrixD matrix, string digits)
+        #region GUI BUILDERS
+        string MatrixToStringA(MatrixD matrix, string digits = "")
+        {
+            return
+                $"R: {matrix.M11.ToString(digits)} : {matrix.M12.ToString(digits)} : {matrix.M13.ToString(digits)}\n" +
+                $"U: {matrix.M21.ToString(digits)} : {matrix.M22.ToString(digits)} : {matrix.M23.ToString(digits)}\n" +
+                $"F: {matrix.M31.ToString(digits)} : {matrix.M32.ToString(digits)} : {matrix.M33.ToString(digits)}\n" +
+                $"T: {matrix.M41.ToString(digits)} : {matrix.M42.ToString(digits)} : {matrix.M43.ToString(digits)}\n" +
+                $"S: {matrix.M14.ToString(digits)} : {matrix.M24.ToString(digits)} : {matrix.M34.ToString(digits)}\n";
+        }
+        static string MatrixToStringB(MatrixD matrix, string digits = "#.##")
         {
             return
                 $"R:{matrix.Right.X.ToString(digits)}|{matrix.Right.Y.ToString(digits)}|{matrix.Right.Z.ToString(digits)}\n" +
                 $"U:{matrix.Up.X.ToString(digits)}|{matrix.Up.Y.ToString(digits)}|{matrix.Up.Z.ToString(digits)}\n" +
-                $"F:{matrix.Forward.X.ToString(digits)}|{matrix.Forward.Y.ToString(digits)}|{matrix.Forward.Z.ToString(digits)}\n";
+                $"F:{matrix.Forward.X.ToString(digits)}|{matrix.Forward.Y.ToString(digits)}|{matrix.Forward.Z.ToString(digits)}\n" +
+                $"T:{matrix.Translation.X.ToString(digits)}|{matrix.Translation.Y.ToString(digits)}|{matrix.Translation.Z.ToString(digits)}\n";
         }
-        string BuildCursor(bool selected, int count)
+        static string BuildCursor(bool selected)//, int count)
         {
-            int cursor;
-            if (selected)
-            {
-                CursorIndex = count - 1;
-                cursor = 1;
-            }
-            else
-                cursor = 0;
+            //int cursor;
+            //if (selected)
+            //{
+            //    CursorIndex = count - 1;
+            //    cursor = 1;
+            //}
+            //else
+            //    cursor = 0;
 
-            return $"{Cursor[cursor]}";
+            return $"{Cursor[selected ? 1 : 0]}";
         }
-        string[] LibraryStringBuilder()
-        {
-            List<string> stringList = new List<string>();
-            stringList.Add($"= Library = [StatorTarget:{StatorTarget.MyState()}]=");
-            Animation anim = null;
-            switch (CurrentGUILayer)
-            {
-                case GUILayer.SEQUENCE:
-                    anim = GetSelectedSequence();
-                    break;
-
-                case GUILayer.K_FRAME:
-                    anim = GetSelectedKeyFrame();
-                    break;
-
-                case GUILayer.J_FRAME:
-                    anim = GetSelectedJointFrame();
-                    break;
-            }
-            if (anim != null)
-            {
-                stringList.Add($"= {anim.MySetting.Name} : {anim.MySetting.MyValue()} =");
-                if (Descriptions.MyState())
-                    LineWrapper(stringList, anim.MySetting.Description, CharTotalCount);
-            }
-            stringList.Add($"=================");
-
-            HeaderSize = stringList.Count;
-            int layer = (int)CurrentGUILayer;
-
-            try
-            {
-                if (JsetBin.Count == 0)
-                {
-                    stringList.Add("No limbs loaded!\n");
-                }
-
-                for (int jSetIndex = 0; jSetIndex < JsetBin.Count; jSetIndex++)
-                {
-                    AppendLibraryItem(GUILayer.JSET, jSetIndex, stringList, JsetBin[jSetIndex].Name);
-
-                    if (layer < 1 || Selected(GUILayer.JSET) != jSetIndex)
-                        continue;
-
-                    JointSet set = GetJointSet(jSetIndex);
-                    if (set.Sequences.Count == 0)
-                        stringList.Add(" No sequences found!");
-
-                    for (int seqIndex = 0; seqIndex < set.Sequences.Count; seqIndex++)
-                    {
-                        AppendLibraryItem(GUILayer.SEQUENCE, seqIndex, stringList, set.Sequences[seqIndex].Name);
-
-                        if (layer < 2 || Selected(GUILayer.SEQUENCE) != seqIndex)
-                            continue;
-
-                        Sequence seq = set.GetSequence(seqIndex);
-                        if (seq.Frames.Count == 0)
-                            stringList.Add("  No frames found!");
-
-                        for (int kFrameIndex = 0; kFrameIndex < seq.Frames.Count; kFrameIndex++)
-                        {
-                            AppendLibraryItem(GUILayer.K_FRAME, kFrameIndex, stringList, seq.Frames[kFrameIndex].Name);
-
-                            if (layer < 3 || Selected(GUILayer.K_FRAME) != kFrameIndex)
-                                continue;
-
-                            if (set.Joints.Count == 0)
-                                stringList.Add("   No joints found!");
-
-                            for (int jFrameIndex = 0; jFrameIndex < seq.GetKeyFrame(kFrameIndex).Jframes.Count(); jFrameIndex++)
-                            {
-                                JointFrame jFrame = seq.GetKeyFrame(kFrameIndex).GetJointFrame(jFrameIndex);
-                                AppendLibraryItem(GUILayer.J_FRAME, jFrameIndex, stringList, $"{jFrame.Joint.Connection.CustomName}:{jFrame.MySetting.MyValue()}");
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                stringList.Add("FAIL POINT!\n");
-            }
-
-            string[] output = stringList.ToArray();
-            return output;
-        }
-        string[] MainStringBuilder(bool main = true)
-        {
-            string input = main ? MainText : InfoText;
-            string[] output = input.Split('\n');
-            return output;
-        }
-        string[] OptionsStringBuilder()
-        {
-            List<string> stringList = new List<string>();
-            stringList.Add("===Options===");
-            if (Descriptions.MyState())
-                LineWrapper(stringList, Options[SelectedOptionIndex].Description, CharTotalCount);
-            stringList.Add($"=================");
-            HeaderSize = stringList.Count;
-
-            try
-            {
-                for (int i = 0; i < Options.Count; i++)
-                    AppendOptionItem(i, stringList, Options[i]);
-            }
-            catch
-            {
-                stringList.Add("Error!");
-            }
-
-            string[] output = stringList.ToArray();
-            return output;
-        }
-        string[] ControlStringBuilder()
-        {
-            List<string> stringList = new List<string>();
-            stringList.Add("===Controls===");
-            stringList.Add("==============");
-
-            try
-            {
-                stringList.Add($"{(CurrentWalkSet == null ? "No legs!" : CurrentWalkSet.Locked ? "Walking..." : "Flying...")}");
-            }
-            catch
-            {
-                stringList.Add("Error!");
-            }
-
-            string[] output = stringList.ToArray();
-            return output;
-        }
-
-        void AppendLibraryItem(GUILayer layer, int index, List<string> rawStrings, string itemName)
-        {
-            DisplayManagerBuilder.Clear();
-
-            bool selected = CurrentGUILayer == layer && SelectedObjectIndex[(int)layer] == index;
-
-            for (int i = 0; i < (int)layer; i++)
-                DisplayManagerBuilder.Append(" ");
-
-            DisplayManagerBuilder.Append(BuildCursor(selected, rawStrings.Count));
-            DisplayManagerBuilder.Append($"{index}:{itemName}");
-
-            switch (layer)
-            {
-                case GUILayer.J_FRAME:
-                    try
-                    {
-                        DisplayManagerBuilder.Append($"[{GetSelectedSet().Joints[index].TAG}]");
-                    }
-                    catch { }
-                    break;
-
-                case GUILayer.JSET:
-                    try
-                    {
-                        DisplayManagerBuilder.Append($"{(GetSelectedSet() == CurrentWalkSet ? ":[LOADED]" : "")}");
-                    }
-                    catch { }
-                    break;
-            }
-
-
-            rawStrings.Add(DisplayManagerBuilder.ToString());
-        }
-        void AppendOptionItem(int index, List<string> rawStrings, Option option)
-        {
-            DisplayManagerBuilder.Clear();
-
-            bool selected = index == SelectedOptionIndex;
-
-            DisplayManagerBuilder.Append(BuildCursor(selected, rawStrings.Count));
-            DisplayManagerBuilder.Append($"{option.Name}:{option.Current()}");
-
-            rawStrings.Add(DisplayManagerBuilder.ToString());
-        }
-        void LineWrapper(List<string> buffer, string[] words, int charMax)
+        static void LineWrapper(List<string> buffer, string[] words, int charMax)
         {
             string newLine = string.Empty;
             for (int i = 0; i < words.Length; i++)
@@ -2102,60 +3054,81 @@ namespace IngameScript
             if (newLine != string.Empty)
                 buffer.Add(newLine);
         }
-        void ButtonStringBuilder()
+        #endregion
+
+        #region GUI INPUT
+        static void SetGuiMode(GUIMode mode)
         {
-            ButtonBuilder.Clear();
-            ButtonBuilder.Append($"= Inputs: [{CurrentGUIMode}] =\n");
-
-            int start = CurrentGUIMode == GUIMode.MAIN ? 1 : 2;
-            if (CurrentGUIMode != GUIMode.MAIN)
-                ButtonBuilder.Append("1 - Main Menu\n");
-
-            int index = (int)CurrentGUIMode;
-
-            for (int i = 0; i < AllButtons[index].Length; i++)
-                ButtonBuilder.Append($"{i + start} - {AllButtons[index][i]}\n");
-
-            for (int i = 0; i < AllInputs[index].Length && i < InputLabels.Length; i++)
-                ButtonBuilder.Append($"{InputLabels[i]} - {AllInputs[index][i]}\n");
-
+            PROG._CurrentGUIMode = mode;
+            Pages[PROG._CurrentGUIMode].SetMode(mode);
+            if (CockPit != null)
+            {
+                CockPit.ControlThrusters = mode == GUIMode.PILOT;
+                foreach (IMyTerminalBlock flightBlock in FlightGroup)
+                    if (flightBlock is IMyGyro)
+                        (flightBlock as IMyGyro).GyroOverride = mode != GUIMode.PILOT;
+            }
         }
-        void FormattedSplashStringBuilder(string[] input)
+        void ButtonPress(GUIKey keyPress)
         {
-            SplashBuilder.Clear();
-            LineBufferSize = LineTotalCount - HeaderSize;
-            int startIndex = CursorIndex - (LineBufferSize / 2);
-            startIndex = startIndex < HeaderSize ? HeaderSize : startIndex;
+            GetCurrentPage().TriggerButton(keyPress);
 
+            if (AutoSave.MyState())
+                SavingData = true;
+
+            GUIUpdate();
+        }
+        void GUIUpdate()
+        {
+            Static("GUI Update\n");
+
+            GetCurrentPage().UpdatePage();
+        }
+
+        static bool UserInputString(ref string buffer)
+        {
             try
             {
-                for (int i = 0; i < HeaderSize; i++)
-                    SplashBuilder.Append($"{input[i]}\n");
+                InputReader.Clear();
+                GetSurface(Screen.INPUT).ReadText(InputReader);
+                buffer = InputReader.ToString();
+                if (buffer == "")
+                    buffer = null;
+
+                return true;
             }
             catch
             {
-                //return output;
+                return false;
             }
-
-            if (!CapLines || LineBufferSize < 1)// || CurrentGUIMode != GUIMode.CREATE)
-                for (int i = 2; i < input.Length; i++)
-                    SplashBuilder.Append(input[i] + "\n");
-            else
-                for (int i = startIndex; i < startIndex + LineBufferSize && i < input.Length; i++)
-                    SplashBuilder.Append(input[i] + "\n");
+        }
+        static bool UserInputFloat(out float buffer)
+        {
+            try
+            {
+                InputReader.Clear();
+                GetSurface(Screen.INPUT).ReadText(InputReader);
+                buffer = float.Parse(InputReader.ToString());
+                return true;
+            }
+            catch
+            {
+                buffer = 0;
+                return false;
+            }
         }
         #endregion
 
-            #region GUI OUTPUTS
-        bool CheckStaticLimit(string append)
+        #region GUI OUTPUTS
+        static bool CheckStaticLimit(string append)
         {
             return DebugBinStatic.Length + append.Length > StaticDebugCharCap;
         }
-        bool Write(Screen screen, StringBuilder input, bool append = true)
+        static bool Write(Screen screen, StringBuilder input, bool append = true)
         {
             return Write(screen, input.ToString(), append);
         }
-        bool Write(Screen screen, string input, bool append = true)
+        static bool Write(Screen screen, string input, bool append = true)
         {
             IMyTextSurface surface = GetSurface(screen);
 
@@ -2164,7 +3137,7 @@ namespace IngameScript
 
             return surface != null;
         }
-        bool Static(string input, bool append = true)
+        static bool Static(string input, bool append = true)
         {
             if (!append || CheckStaticLimit(input))
                 DebugBinStatic.Clear();
@@ -2178,8 +3151,6 @@ namespace IngameScript
 
         bool MenuSystem(Screen gui, Screen buttons)
         {
-            if (CockpitMenus)
-                return Write(gui, SplashBuilder, false) && Write(buttons, ButtonBuilder, false);
             return Write(gui, SplashBuilder, false) && Write(buttons, ButtonBuilder, false);
         }
         bool Diagnostics(Screen panel)
@@ -2187,20 +3158,28 @@ namespace IngameScript
             DisplayManagerBuilder.Clear();
             try
             {
-                DisplayManagerBuilder.Append($"Control: {Control != null}\n");
+                DisplayManagerBuilder.Append(
+                    $"Control: {CockPit != null}\n" +
+                    $"Designated: {DesignatedPlane != null}\n" +
+                    $"PlaneBlock: {CurrentWalkSet.Plane != null}\n");
                 Vector3 B = CurrentWalkSet.PlaneBuffer;
                 Vector3 T = CurrentWalkSet.TurnBuffer;
-                Foot F = CurrentWalkSet.GetFoot(1);
+                Foot F = CurrentWalkSet.GetFoot(CurrentWalkSet.LockedIndex);
+                Foot U = CurrentWalkSet.GetFoot(0);
 
-                string derp = "hi";
-                derp += " there";
+                DisplayManagerBuilder.Append($"RawInput:\n{CockPit.RotationIndicator.Y}:{CockPit.RotationIndicator.X}:{CockPit.RollIndicator}\n");
 
-                DisplayManagerBuilder.Append($"RawInput:\n{Control.RotationIndicator.Y}:{Control.RotationIndicator.X}:{Control.RollIndicator}\n");
-                DisplayManagerBuilder.Append($"P_Corrections:\n{B.X:0.###}:{B.Y:0.###}:{B.Z:0.###}\n");
-                DisplayManagerBuilder.Append($"T_Corrections:\n{T.X:0.###}:{T.Y:0.###}:{T.Z:0.###}\n");
-                DisplayManagerBuilder.Append($"Finals:\n{F.GetPlanar(0).ActiveTarget:0.###}\n{F.GetPlanar(1).ActiveTarget:0.###}\n{F.GetPlanar(2).ActiveTarget:0.###}\n");
+                DisplayManagerBuilder.Append($"LockedFinals:\n");
+                if (F != null)
+                    for (int i = 0; i < 3; i++)
+                        DisplayManagerBuilder.Append($"{(F.GetPlanar(i) == null ? "null" : F.GetPlanar(i).ActiveTarget.ToString())}\n");
+                else
+                    DisplayManagerBuilder.Append("No locked foot!\n");
+
                 DisplayManagerBuilder.Append($"LockedIndex: {CurrentWalkSet.LockedIndex}\n");
-                //DisplayManagerBuilder.Append($"Plane Matrix: {MatrixToString(Control.WorldMatrix, Digits)}\n");
+                DisplayManagerBuilder.Append($"0 indexFinals:\n");
+                for (int i = 0; i < U.Planars.Count; i++)
+                    DisplayManagerBuilder.Append($"Planar {i} (Anim/Active): {U.GetPlanar(i).AnimTarget}/{U.GetPlanar(i).ActiveTarget}\n");
 
                 for (int i = 0; i < CurrentWalkSet.Feet.Count; i++)
                 {
@@ -2266,576 +3245,56 @@ namespace IngameScript
         }
         #endregion
 
-            #region GUI EVENTS
-        void GUIUpdate()
-        {
-            Static("GUI Update\n");
-
-            ButtonStringBuilder();
-
-            string[] guiData = null;
-            switch (CurrentGUIMode)
-            {
-                case GUIMode.EDIT:
-                case GUIMode.CREATE:
-                    guiData = LibraryStringBuilder();
-                    DemoSelectedFrame();
-                    break;
-
-                case GUIMode.INFO:
-                    guiData = MainStringBuilder(false);
-                    break;
-
-                case GUIMode.MAIN:
-                    guiData = MainStringBuilder();
-                    break;
-
-                case GUIMode.PILOT:
-                    guiData = ControlStringBuilder();
-                    break;
-
-                case GUIMode.OPTIONS:
-                    guiData = OptionsStringBuilder();
-                    break;
-            }
-
-            FormattedSplashStringBuilder(guiData);
-        }
-
-        void DemoSelectedFrame()
-        {
-            if (AutoDemo.MyState())
-            {
-                try
-                {
-                    GetSelectedSequence().DemoKeyFrame(Selected(GUILayer.K_FRAME));
-                }
-                catch
-                {
-                    Static("Failed to demo keyFrame!\n");
-                }
-            }
-        }
-        void LoadItem()
-        {
-            if (CurrentGUILayer == GUILayer.J_FRAME) // do nothing
-                return;
-
-            CurrentWalkSet = GetSelectedSet();
-
-            if (CurrentGUILayer == GUILayer.JSET)
-                return;
-
-            LoadWalk(CurrentWalkSet.GetSequence(SelectedObjectIndex[1]));
-
-            if (CurrentGUILayer == GUILayer.SEQUENCE)
-                return;
-
-            if (CurrentWalk != null)
-                CurrentWalk.DemoKeyFrame(SelectedObjectIndex[2]);
-        }
-        void LoadWalk(Sequence walk)
-        {
-            CurrentWalk = walk;
-
-            if (CurrentWalk != null)
-                CurrentWalk.ZeroSequence();
-        }
-        void InsertSet(string name, bool add)
-        {
-            if (name == null)
-                return;
-
-            int index = SelectedObjectIndex[0];
-            index += add ? 1 : 0;
-
-            if (index >= JsetBin.Count)
-            {
-                JsetBin.Add(NewJointSet(name, JsetBin.Count));
-                return;
-            }
-
-            JsetBin.Insert(index, NewJointSet(name, index));
-            ReIndexSets();
-        }
-        void ReIndexSets()
-        {
-            for (int i = 0; i < JsetBin.Count; i++)
-                JsetBin[i].MyIndex = i;
-        }
-        void EditValue(Animation anim)
-        {
-            if (anim == null)
-                return;
-
-            float value;
-            if (!UserInputFloat(out value))
-                return;
-
-            anim.MySetting.Change(value);
-        }
-        void EditName()
-        {
-            string name = null;
-            UserInputString(ref name);
-            if (name == null)
-                return;
-
-            Root root = GetSelectedRoot();
-            if (root == null)
-                return;
-
-            root.Name = name;
-        }
-        void InsertItem(bool add = true)
-        {
-            string name = null;
-            int index = -1;
-            UserInputString(ref name);
-            JointSet set;
-            Sequence seq;
-            switch (CurrentGUILayer)
-            {
-                case GUILayer.JSET:
-                    InsertSet(name, add);
-                    break;
-
-                case GUILayer.SEQUENCE:
-
-                    set = GetSelectedSet();
-                    index = SelectedObjectIndex[1];
-                    index += add ? 1 : 0;
-
-                    if (name == null)
-                        name = $"New Sequence";
-
-                    RootData seqRoot = set.Parent(name, index);
-                    set.Insert(index, new Sequence(seqRoot, set));
-                    break;
-
-                case GUILayer.K_FRAME:
-
-                    set = GetSelectedSet();
-                    seq = set.GetSequence(SelectedObjectIndex[1]);
-                    index = SelectedObjectIndex[2];
-                    index += add ? 1 : 0;
-
-                    if (name == null)
-                        name = $"New Frame";
-
-                    seq.AddKeyFrameSnapshot(index, name, Snapping);
-                    break;
-            }
-
-            LibrarySelection();
-        }
-        void DeleteItem()
-        {
-            switch (CurrentGUILayer)
-            {
-                case GUILayer.JSET:
-                    JsetBin.RemoveAt(Selected(GUILayer.JSET));
-                    break;
-
-                case GUILayer.SEQUENCE:
-                    GetSelectedSet().Sequences.RemoveAt(Selected(GUILayer.SEQUENCE));
-                    break;
-
-                case GUILayer.K_FRAME:
-                    GetSelectedSequence().RemoveKeyFrameAtIndex(Selected(GUILayer.K_FRAME));
-                    break;
-            }
-
-            int a = JsetBin.Count;
-
-            if (SelectedObjectIndex[0] >= a && a > 0)
-            {
-                SelectedObjectIndex[0] = a - 1;
-            }
-
-            if (a == 0 || JsetBin[SelectedObjectIndex[0]] == null)
-            {
-                SelectedObjectIndex[1] = 0;
-                SelectedObjectIndex[2] = 0;
-                SelectedObjectIndex[3] = 0;
-                return;
-            }
-
-            int b = GetSelectedSet().Sequences.Count;
-            if (SelectedObjectIndex[1] >= b && b > 0)
-            {
-                SelectedObjectIndex[1] = b - 1;
-            }
-
-            if (b == 0 || GetSelectedSequence() == null)
-            {
-                SelectedObjectIndex[2] = 0;
-                SelectedObjectIndex[3] = 0;
-                return;
-            }
-
-            int c = GetSelectedSequence().Frames.Count;
-            if (SelectedObjectIndex[2] >= c && c > 0)
-            {
-                SelectedObjectIndex[2] = c - 1;
-            }
-
-            if (c == 0 || GetSelectedKeyFrame() == null)
-            {
-                SelectedObjectIndex[3] = 0;
-                return;
-            }
-        }
-
-        void LibrarySelection(int adj = 0)
-        {
-            int[] counts = new int[4];
-            JointSet limb = null;
-            Sequence seq = null;
-            KeyFrame frame = null;
-
-            if (JsetBin.Count > SelectedObjectIndex[0])
-                limb = GetSelectedSet();
-
-            if (limb != null && limb.Sequences.Count > Selected(GUILayer.SEQUENCE))
-                seq = limb.GetSequence(Selected(GUILayer.SEQUENCE));
-
-            if (seq != null && seq.Frames.Count > Selected(GUILayer.K_FRAME))
-                frame = seq.GetKeyFrame(Selected(GUILayer.K_FRAME));
-
-            if (limb == null && CurrentGUILayer > GUILayer.JSET)
-                CurrentGUILayer = GUILayer.JSET;
-
-            else if (seq == null && CurrentGUILayer > GUILayer.SEQUENCE)
-                CurrentGUILayer = GUILayer.SEQUENCE;
-
-            else if (frame == null && CurrentGUILayer > GUILayer.K_FRAME)
-                CurrentGUILayer = GUILayer.K_FRAME;
-
-            ChangeSelection(CurrentGUILayer, adj, GetSelectedCount());
-        }
-        void OptionSelection(bool up)
-        {
-            SelectedOptionIndex += up ? -1 : 1;
-            SelectedOptionIndex = SelectedOptionIndex >= Options.Count ? 0 : SelectedOptionIndex < 0 ? Options.Count - 1 : SelectedOptionIndex;
-        }
-        void ChangeGUILayer(bool up)
-        {
-            int layer = (int)CurrentGUILayer;
-            layer += up ? 1 : -1;
-            layer = layer > 3 ? 0 : layer < 0 ? 3 : layer;
-
-            /*if (up)
-                layer += ((int)CurrentGUILayer == 3) ? 0 : 1;
-            else
-                layer -= ((int)CurrentGUILayer == 0) ? 0 : 1;*/
-            CurrentGUILayer = (GUILayer)layer;
-            LibrarySelection(up ? -1 : 1);
-        }
-        void AdjustOption(bool up)
-        {
-            Options[SelectedOptionIndex].Adjust(up);
-        }
-        void ChangeSelection(GUILayer layer, int adjust, int count)
-        {
-            int index = Selected(layer) + adjust;
-            SelectedObjectIndex[(int)layer] = index >= count ? 0 : index < 0 ? count - 1 : index;
-        }
-        int Selected(GUILayer layer)
-        {
-            return SelectedObjectIndex[(int)layer];
-        }
         #endregion
 
-            #region GUI INPUT
-        void ButtonPress(int button)
-        {
-            if (button == 1 && CurrentGUIMode != GUIMode.MAIN)
-            {
-                CurrentGUIMode = GUIMode.MAIN;
-            }
-            else
-                switch (CurrentGUIMode)
-                {
-                    case GUIMode.MAIN:
-                        MainMenuFunctions(button);
-                        break;
-
-                    case GUIMode.INFO:
-                        InfoMenuFunctions(button);
-                        break;
-
-                    case GUIMode.CREATE:
-                        CreateMenuFunctions(button);
-                        break;
-
-                    case GUIMode.EDIT:
-                        EditMenuFunctions(button);
-                        break;
-
-                    case GUIMode.PILOT:
-                        ControlMenuFunctions(button);
-                        break;
-
-                    case GUIMode.OPTIONS:
-                        OptionsMenuFunctions(button);
-                        break;
-                }
-            GUIUpdate();
-        }
-        void GUINavigation(GUINav dir)
-        {
-            switch (dir)
-            {
-                case GUINav.UP:
-                    CursorMove(true);
-                    break;
-                case GUINav.DOWN:
-                    CursorMove(false);
-                    break;
-                case GUINav.FORWARD:
-                    CursorAction(true);
-                    break;
-                case GUINav.BACKWARD:
-                    CursorAction(false);
-                    break;
-            }
-            GUIUpdate();
-        }
-
-        bool UserInputString(ref string buffer)
-        {
-            try
-            {
-                InputReader.Clear();
-                GetSurface(Screen.INPUT).ReadText(InputReader);
-                buffer = InputReader.ToString();
-                if (buffer == "")
-                    buffer = null;
-
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        bool UserInputFloat(out float buffer)
-        {
-            try
-            {
-                InputReader.Clear();
-                GetSurface(Screen.INPUT).ReadText(InputReader);
-                buffer = float.Parse(InputReader.ToString());
-                return true;
-            }
-            catch
-            {
-                buffer = 0;
-                return false;
-            }
-        }
-
-        void OptionsMenuFunctions(int button)
-        {
-
-        }
-        void ControlMenuFunctions(int button)
-        {
-            if (CurrentWalkSet == null ||
-                CurrentWalk == null)
-                return;
-
-            switch (button)
-            {
-                case 2:
-                    CurrentWalkSet.UnlockAllFeet();
-                    break;
-
-                case 3:
-                    Orientation.Adjust();
-                    CurrentWalkSet.TogglePlaneing(Orientation.MyState());
-                    break;
-
-                case 4:
-                    CurrentWalk.ToggleClockPause();
-                    break;
-
-                case 5:
-                    CurrentWalk.ToggleClockDirection();
-                    break;
-
-                case 6:
-                    CurrentWalkSet.ZeroJointSet();
-                    CurrentWalk.ZeroSequence();
-                    break;
-            }
-        }
-        void MainMenuFunctions(int button)
-        {
-            switch (button)
-            {
-                case 1:
-                    CurrentGUIMode = GUIMode.PILOT;
-                    break;
-
-                case 2:
-                    CurrentGUIMode = GUIMode.INFO;
-                    break;
-
-                case 3:
-                    CurrentGUIMode = GUIMode.CREATE;
-                    break;
-
-                case 4:
-                    CurrentGUIMode = GUIMode.OPTIONS;
-                    break;
-
-                case 5:
-                    DataWrite();
-                    break;
-
-                case 6:
-                    SavingData = true;
-                    break;
-
-                case 7:
-                    LoadingData = true;
-                    break;
-            }
-        }
-        void InfoMenuFunctions(int button)
-        {
-
-        }
-        void CreateMenuFunctions(int button)
-        {
-            if (button == 2)
-            {
-                CurrentGUIMode = GUIMode.EDIT;
-                return;
-            }
-
-            switch (button)
-            {
-                case 3:
-                    LoadItem();
-                    break;
-
-                case 4:
-                    InsertItem();
-                    break;
-
-                case 5:
-                    InsertItem(false); //add
-                    break;
-
-                case 6:
-                    DeleteItem();
-                    break;
-
-                case 7:
-                    EditName();
-                    break;
-            }
-
-            if (AutoSave.MyState())
-                SavingData = true;
-        }
-        void EditMenuFunctions(int button)
-        {
-            if (button == 2)
-            {
-                CurrentGUIMode = GUIMode.CREATE;
-                return;
-            }
-
-            Animation anim = GetSelectedAnim();
-
-            switch (button)
-            {
-                case 3:
-                    if (anim != null)
-                        anim.MySetting.Adjust(true);
-                    break;
-
-                case 4:
-                    if (anim != null)
-                        anim.MySetting.Adjust(false);
-                    break;
-
-                case 5:
-                    EditValue(anim);
-                    break;
-
-                case 6:
-                    StatorTarget.Adjust();
-                    break;
-            }
-
-            if (AutoSave.MyState())
-                SavingData = true;
-        }
-
-        void CursorMove(bool up)
-        {
-            switch (CurrentGUIMode)
-            {
-                case GUIMode.CREATE:
-                case GUIMode.EDIT:
-                    LibrarySelection(up ? -1 : 1);
-                    break;
-
-                case GUIMode.OPTIONS:
-                    OptionSelection(up);
-                    break;
-            }
-        }
-        void CursorAction(bool main)
-        {
-            switch (CurrentGUIMode)
-            {
-                case GUIMode.CREATE:
-                case GUIMode.EDIT:
-                    ChangeGUILayer(main);
-                    break;
-
-                case GUIMode.OPTIONS:
-                    AdjustOption(main);
-                    break;
-            }
-        }
-        #endregion
-
-        #endregion
+        #region RUNTIME
 
         #region UPATES
         void ControlInput()
         {
-            if (Control == null)
+            if (CockPit == null)
             {
                 Echo("No Control!");
-                RotationBuffer = Vector3.Zero;
+                InputRotationBuffer = Vector3.Zero;
                 return;
             }
 
-            int z = (int)Control.MoveIndicator.Z;
-            int x = (int)Control.MoveIndicator.X;
-
-            if (CurrentGUIMode == GUIMode.PILOT)
+            if (GetCurrentGuiMode() == GUIMode.PILOT)
             {
-                RotationBuffer.X = LookScalar * -Control.RotationIndicator.Y;
-                RotationBuffer.Y = LookScalar * -Control.RotationIndicator.X;
+                if (!DroneOverride.MyState() && DroneControlled && !WAIT)
+                {
+                    DebugBinStream.Append("Buffering drone input...\n");
 
-                RotationBuffer.X = RotationBuffer.X < MouseSensitivity.MyValue() ? RotationBuffer.X : MouseSensitivity.MyValue();
-                RotationBuffer.Y = RotationBuffer.Y < MouseSensitivity.MyValue() ? RotationBuffer.Y : MouseSensitivity.MyValue();
+                    InputRotationBuffer.X = -MECH_IX_BUFFER[(int)MechIx.PITCH];
+                    InputRotationBuffer.Y = -MECH_IX_BUFFER[(int)MechIx.YAW];
+                    InputRotationBuffer.Z = -MECH_IX_BUFFER[(int)MechIx.ROLL];
+                    InputTurnBuffer = -MECH_IX_BUFFER[(int)MechIx.MOVE_X];
+                    MoveBuffer = -(int)MECH_IX_BUFFER[(int)MechIx.MOVE_Z];
 
-                RotationBuffer.Z = RollScalar * -Control.RollIndicator;
-                TurnBuffer = Control.MoveIndicator.X;
+                    DebugBinStream.Append("Buffering Complete!\n");
+                }
+                else
+                {
+                    InputRotationBuffer.Y = LookScalar * -CockPit.RotationIndicator.Y;
+                    InputRotationBuffer.X = LookScalar * -CockPit.RotationIndicator.X;
 
-                DebugBinStream.Append($"TurnBuffer(f): {TurnBuffer}\n");
+                    InputRotationBuffer.X = InputRotationBuffer.X < MouseSensitivity.MyValue() ? InputRotationBuffer.X : MouseSensitivity.MyValue();
+                    InputRotationBuffer.Y = InputRotationBuffer.Y < MouseSensitivity.MyValue() ? InputRotationBuffer.Y : MouseSensitivity.MyValue();
 
-                switch ((int)Control.MoveIndicator.Z) //Walking
+                    InputRotationBuffer.Z = RollScalar * -CockPit.RollIndicator;
+                    InputTurnBuffer = CockPit.MoveIndicator.X;
+                    MoveBuffer = (int)CockPit.MoveIndicator.Z;
+                }
+
+                DebugBinStream.Append($"TurnBuffer(f): {InputTurnBuffer}\n");
+
+                if (LastMechWalkInput != MoveBuffer)
+                {
+                    LastMechWalkInput = MoveBuffer;
+                    CurrentWalk.SetClockMode((ClockMode)MoveBuffer);
+                }
+
+                /*switch (MoveBuffer) //Walking
                 {
                     case 1:
                         if (LastMechWalkInput == -1)
@@ -2857,28 +3316,51 @@ namespace IngameScript
                         LastMechWalkInput = 1;
                         CurrentWalk.SetClockMode(ClockMode.FOR);
                         break;
-                }
+                }*/
+
+                DebugBinStream.Append("Walk input digested\n");
             }
             else
             {
-                if (LastMenuInput[0] != z)
+                DebugBinStream.Append("Menu Navigation...\n");
+
+                int[] menuMove = {
+                    (int)CockPit.MoveIndicator.X,
+                    (int)CockPit.MoveIndicator.Y,
+                    (int)CockPit.MoveIndicator.Z,
+                    (int)CockPit.RollIndicator
+                };
+                
+                for (int i = 0; i < LastMenuInput.Length; i++)
                 {
-                    LastMenuInput[0] = z;
-                    if (z != 0)
+                    DebugBinStream.Append($" Axis {i}: {menuMove[i]}\n");
+
+                    if (LastMenuInput[i] == menuMove[i])
+                        continue;
+
+                    LastMenuInput[i] = menuMove[i];
+
+                    if (menuMove[i] != 0)
                     {
-                        GUINav nav = z < 0 ? GUINav.UP : GUINav.DOWN;
-                        GUINavigation(nav);
+                        GUIKey nav = (GUIKey)((int)GUIKey.RIGHT + (i * 2) + (menuMove[i] < 0 ? 1 : 0));
+                        Static($"move: {nav}\n");
+                        ButtonPress(nav);
                     }
                 }
-                if (LastMenuInput[1] != x)
-                {
-                    LastMenuInput[1] = x;
-                    if (x != 0)
-                    {
-                        GUINav nav = x < 0 ? GUINav.BACKWARD : GUINav.FORWARD;
-                        GUINavigation(nav);
-                    }
-                }
+            }
+        }
+        
+        void DroneCommand(MechAction action)
+        {
+            switch (action)
+            {
+                case MechAction.WAIT:
+                    WAIT = true;
+                    break;
+
+                case MechAction.DEFAULT:
+                    WAIT = false;
+                    break;
             }
         }
         void RuntimeArguments(string argument)
@@ -2901,7 +3383,7 @@ namespace IngameScript
 
                     int button = 0;
                     if (int.TryParse(code, out button))
-                        ButtonPress(button);
+                        ButtonPress((GUIKey)button);
 
                     break;
             }
@@ -2909,27 +3391,29 @@ namespace IngameScript
 
         void WalkManager()
         {
-            if (CurrentWalkSet == null ||
+            if (!StatorControl.MyState() ||
+                CurrentWalkSet == null ||
                 CurrentWalk == null)
                 return;
 
             WithinTargetThreshold = CurrentWalkSet.UpdateJoints();
             CurrentWalkSet.UpdatePlanars();
-            CurrentWalk.UpdateSequence();
+            CurrentWalk.UpdateSequence(false);
         }
         void AnimationManager()
         {
-            if (Animations == null ||
+            if (!StatorControl.MyState() ||
+                Animations == null ||
                 Animations.Count == 0)
                 return;
-
+            
             foreach (Sequence seq in Animations)
-                seq.UpdateSequence();
+                seq.UpdateSequence(true);
         }
         void FeetManager()
         {
-            if (IgnoreFeet.MyState() ||
-                !StatorControl.MyState() ||
+            if (//!StatorControl.MyState() ||
+                IgnoreFeet.MyState() ||
                 CurrentWalkSet == null)
                 return;
 
@@ -2951,17 +3435,75 @@ namespace IngameScript
             Echo($"MechStatus: {MechStatus(Screen.MECH_STATUS)}");
             Echo($"DebugStream: {DebugStream(Screen.DEBUG_STREAM)}");
         }
+        void DroneMessageHandler()
+        {
+            DroneTimeOutClock--;
+            DroneTimeOutClock = DroneTimeOutClock < 0 ? 0 : DroneTimeOutClock;
+
+            if (DroneEar.HasPendingMessage)
+            {
+
+                while (DroneEar.HasPendingMessage)
+                {
+                    MyIGCMessage message = DroneEar.AcceptMessage(); //Always digest to clear stack.
+
+                    try
+                    {
+                        ImmutableArray<double> rawData = (ImmutableArray<double>)message.Data;
+
+
+                        for (int i = 0; i < MECH_IX_BUFFER.Length; i++)
+                        {
+                            MECH_IX_BUFFER[i] = rawData[i] == double.NaN ? 0 : rawData[i];
+                        }
+
+
+                        DroneCommand((MechAction)MECH_IX_BUFFER[(int)MechIx.ACTION]);
+
+                        DroneTimeOutClock = DroneTimeOut;
+
+                    }
+                    catch
+                    {
+                        DebugBinStream.Append("FAIL-POINT!\n");
+                    }
+                }
+            }
+
+            else
+            {
+                for (int i = 0; i < MECH_IX_BUFFER.Length; i++)
+                    MECH_IX_BUFFER[i] = 0;
+
+            }
+
+
+        }
         #endregion
 
         #region GLOBAL EVENTS
+        static void LoadWalk(Sequence walk)
+        {
+            CurrentWalk = walk;
+
+            if (CurrentWalk != null)
+            {
+                CurrentWalk.OverrideSet();
+                CurrentWalk.ZeroSequence();
+            }
+        }
+        void ToggleOrientation(bool enable)
+        {
+            CurrentWalkSet.TogglePlaneing(enable);
+        }
         void ToggleFlight(bool enable)
         {
             foreach (IMyFunctionalBlock flightBlock in FlightGroup)
                 flightBlock.Enabled = enable;
         }
-        void DataWrite()
+        static void WriteCustomData()
         {
-            Me.CustomData = SaveData.ToString();
+            PROG.Me.CustomData = SaveData.ToString();
         }
         bool CheckCallLimit()
         {
@@ -2987,29 +3529,41 @@ namespace IngameScript
                 if (i < Screens.Count)
                 {
                     Screens[i].ContentType = ContentType.TEXT_AND_IMAGE;
-                    Screens[i].WriteText("");
+                    Screens[i].WriteText($"Index:{i}");
                 }
             }
         }
+        void SetupOptions()
+        {
+            Options = new List<Option>();
+            SetupSettings();
+            SetupToggles();
+        }
         void SetupSettings()
         {
-            StepThreshold = new Setting(this, "Step Threshold", "How long into a keyframe (%) the mech must walk for before a foot can re-attach again.",
+            StepThreshold = new Setting("Step Threshold", "How long into a keyframe (%) the mech must walk for before a foot can re-attach again.",
                 0.6f, 0.05f);
 
-            FrameThreshold = new Setting(this, "Frame Threshold", "The maxium allowed tolerance for joint deviation between clock-triggered frame loads.",
+            FrameThreshold = new Setting("Frame Threshold", "The maxium allowed tolerance for joint deviation between clock-triggered frame loads.",
                 10f, 0.1f, 20f, 0.5f);
 
-            MaxAcceleration = new Setting(this, "Max Stator Acceleration", "Fastest rate (RPM) at which the joint stators will change their velocity per operation tick.",
+            MaxAcceleration = new Setting("Max Stator Acceleration", "Fastest rate (RPM) at which the joint stators will change their velocity per operation tick.",
                 0.3f, 0.1f, 1f);
 
-            MaxSpeed = new Setting(this, "Max Stator Speed", "Top speed (RPM) that any stator will be allowed to move at.",
+            MaxSpeed = new Setting("Max Stator Speed", "Top speed (RPM) that any stator will be allowed to move at.",
                 10f, 0.5f, 20f);
 
-            MouseSensitivity = new Setting(this, "Mouse Sensitivity", "Maximum input value from the mouse",
+            MouseSensitivity = new Setting("Mouse Sensitivity", "Maximum input value from the mouse",
                 1f, 0.1f, 5f, 0.1f);
 
-            SnappingIncrement = new Setting(this, "Snapping Increment", "Amount (Deg) which jointFrames will be incremented or decremented per press.",
+            SnappingIncrement = new Setting("Snapping Increment", "Amount (Deg) by which jointFrames will be adjusted per press.",
                 5, 1, 45);
+
+            FrameDurationIncrement = new Setting("Frame Duration Increment", "Amount by which the keyFrames duration will be adjusted per press",
+                0.1f, 0.01f, 2f, 0.1f);
+
+            SequenceSpeedIncrement = new Setting("Sequence ClockSpeed Increment", "Amount by which the sequences clock speeds will be adjusted per press",
+                0.1f, 0.01f, 2f, 0.1f);
 
             Settings = new List<Setting>
             {
@@ -3019,28 +3573,35 @@ namespace IngameScript
                 MaxSpeed,
                 MouseSensitivity,
                 SnappingIncrement,
+                FrameDurationIncrement,
+                SequenceSpeedIncrement
             };
 
             Options.AddRange(Settings);
         }
         void SetupToggles()
         {
+            DroneOverride = new Toggle("Drone Override", "Prevents drone controller from controlling the mech. Messages will still be recieved. Note the drone controller only works in pilot mode.", false);
 
-            IgnoreSave = new Toggle(this, "Ignore Save", "Prevents the CustomData of the PB from being over-written auto-matically (eg. recompile/game save)", true);
-            IgnoreFeet = new Toggle(this, "Ignore Feet", "Prevents the use of anything relating to feet, including locking and plane actuation.", false);
-            AutoSave = new Toggle(this, "Auto Save", "Will auto-matically save any changes to the mechs library after any change is made.", true);
-            AutoDemo = new Toggle(this, "Auto Demo", "Will auto-matically change the stator targets to the key-frame that gets selected", true);
-            StatorTarget = new Toggle(this, "Stator Target", "Enables whether Stators are actively fed a new target every operation tick", true);
-            StatorControl = new Toggle(this, "Stator Control", "Enables whether Stators are affected at all by the program", true);
-            Descriptions = new Toggle(this, "Descriptions", "Enables in-game descriptions of all options.", true);
-            Orientation = new Toggle(this, "Orientation", "Enables the use to orient the mech using the controller inputs of the cockpit", true);
+            IgnoreSave = new Toggle("Ignore Save", "Prevents the CustomData of the PB from being over-written auto-matically (eg. recompile/game save)", true);
+            IgnoreFeet = new Toggle("Ignore Feet", "Prevents the use of anything relating to feet, including locking and plane actuation.", false);
+            AutoSave = new Toggle("Auto Save", "Will auto-matically save any changes to the mechs library after any change is made.", true);
+            AutoDemo = new Toggle("Auto Demo", "Will auto-matically change the stator targets to the key-frame that gets selected", true);
+            Strafing = new Toggle("Strafing", "Enables whether the mech can turn its lifted foot.", true);
+            StatorTarget = new Toggle("Stator Target", "Enables whether Stators are actively fed a new target every operation tick", true);
+            StatorControl = new Toggle("Stator Control", "Enables whether Stators are affected at all by the program", true);
+            Descriptions = new Toggle("Descriptions", "Enables in-game descriptions of all options.", true);
+            Orientation = new Toggle("Orientation", "Enables the use to orient the mech using the controller inputs of the cockpit", true, ToggleOrientation);
 
             Toggles = new List<Toggle>
             {
+                DroneOverride,
+
                 IgnoreSave,
                 IgnoreFeet,
                 AutoSave,
                 AutoDemo,
+                Strafing,
                 StatorTarget,
                 StatorControl,
                 Descriptions,
@@ -3064,24 +3625,31 @@ namespace IngameScript
             if (cockpits.Count < 1)
                 return;
 
-            Control = cockpits[0];
-            for (int i = 0; i < Control.SurfaceCount; i++)
-                Screens.Add(Control.GetSurface(i));
+            CockPit = cockpits[0];
+            for (int i = 0; i < CockPit.SurfaceCount; i++)
+                Screens.Add(CockPit.GetSurface(i));
+        }
+        void SetupDroneControl()
+        {
+            DroneEar = IGC.RegisterBroadcastListener(DroneChannel);
         }
         #endregion
 
         #region ENTRY POINTS
         public Program()
         {
+            PROG = this;
+
             try
             {
                 AssignFlightGroup();
-
                 SetupController();
+                SetupDroneControl();
                 SetupScreens();
-                SetupSettings();
-                SetupToggles();
+                SetupOptions();
 
+                DesignatedPlane = GridTerminalSystem.GetBlockWithName(PlaneCustomName);
+                DesignatedPlane = DesignatedPlane == null ? CockPit : DesignatedPlane;
                 PROG_FREQ = DEF_FREQ;
                 Runtime.UpdateFrequency = PROG_FREQ;
                 Initialized = true;
@@ -3092,6 +3660,7 @@ namespace IngameScript
                 return;
             }
 
+            SetGuiMode(GUIMode.MAIN);
             GUIUpdate();
         }
         public void Main(string argument, UpdateType updateSource)
@@ -3100,7 +3669,7 @@ namespace IngameScript
 
             if (!Initialized)
                 return;
-            
+
             TransferCount = 0;
 
             if (BuildingJoints)
@@ -3121,15 +3690,26 @@ namespace IngameScript
             {
                 int saveResult = DataSave();
                 SavingData = saveResult == 0;
+                Static($"Still Saving = {saveResult}\n\n");
                 return;
             }
 
             RuntimeArguments(argument);
-            ControlInput();
-            FeetManager();
-            WalkManager();
-            AnimationManager();
-            DisplayManager();
+            try
+            {
+                DroneMessageHandler();
+                ControlInput();
+                FeetManager();
+                WalkManager();
+                AnimationManager();
+                DisplayManager();
+            }
+            catch
+            {
+                DebugBinStream.Append("FAIL-POINT!");
+                Write(Screen.DEBUG_STREAM, DebugBinStream);
+                Runtime.UpdateFrequency = UpdateFrequency.None;
+            }
 
             DebugBinStream.Clear(); // MUST HAPPEN!
         }
@@ -3138,17 +3718,20 @@ namespace IngameScript
             if (IgnoreSave.MyState())
                 return;
 
-            DataWrite();
+            WriteCustomData();
         }
         #endregion
 
+        #endregion
+
         #region CONSTRUCTIONS
-        JointSet NewJointSet(string groupName, int index)
+        static JointSet NewJointSet(string groupName, int index)
         {
+            Static("Making new set...\n");
             List<IMyBlockGroup> groups = new List<IMyBlockGroup>();
             List<IMyBlockGroup> feet = new List<IMyBlockGroup>();
             IMyBlockGroup fullSet = null;
-            GridTerminalSystem.GetBlockGroups(groups);
+            GetGridBlockGroups(groups);
 
             foreach (IMyBlockGroup group in groups)
             {
@@ -3162,9 +3745,9 @@ namespace IngameScript
             if (fullSet == null)
                 return null;
 
-            RootData setRoot = new RootData(groupName, index, -1, this);
-            JointSet newSet = new JointSet(setRoot, Control, groupName);
-            List<IMyTerminalBlock> joints = GetBlocks(fullSet);
+            RootData setRoot = new RootData(groupName, index, -1);
+            JointSet newSet = new JointSet(setRoot, CockPit, groupName);
+            List<IMyTerminalBlock> joints = GetBlocksFromGroup(fullSet);
             int jointIndex = 0;
             List<IMyTerminalBlock> footBuffer;
             RootData jRoot;
@@ -3172,11 +3755,11 @@ namespace IngameScript
 
             for (int f = 0; f < feet.Count; f++)
             {
-                footBuffer = GetBlocks(feet[f]);
+                footBuffer = GetBlocksFromGroup(feet[f]);
                 if (footBuffer.Count < 1)
                     continue;
 
-                Foot newFoot = new Foot(newSet.Parent(feet[f].Name, f));
+                Foot newFoot = new Foot(newSet.ParentData(feet[f].Name, f));
                 newSet.Feet.Add(newFoot);
                 jData.FootIndex = f;
                 int toeIndex = 0;
@@ -3188,7 +3771,7 @@ namespace IngameScript
                     bool toe = footBuffer[b].CustomName.Contains(ToeSignature);
                     bool turn = footBuffer[b].CustomName.Contains(TurnSignature);
 
-                    jRoot = newSet.Parent(footBuffer[b].CustomName);
+                    jRoot = newSet.ParentData(footBuffer[b].CustomName);
                     Static($"Name: {jRoot.Name}\n");
 
                     if (footBuffer[b] is IMyMechanicalConnectionBlock)
@@ -3228,7 +3811,7 @@ namespace IngameScript
             {
                 if (joints[j] is IMyMechanicalConnectionBlock)
                 {
-                    jRoot = newSet.Parent("[JOINT]", jointIndex);
+                    jRoot = newSet.ParentData("[JOINT]", jointIndex);
                     jData.Root = jRoot;
                     jData.TAG = JointTag;
 
@@ -3240,21 +3823,42 @@ namespace IngameScript
             }
             return newSet;
         }
-        Joint NewJoint(IMyMechanicalConnectionBlock jointBlock, JointData data)
+        static Joint NewJoint(IMyMechanicalConnectionBlock jointBlock, JointData data)
         {
+            Joint newJoint = null;
+
             if (jointBlock is IMyPistonBase)
-                return new Piston((IMyPistonBase)jointBlock, data);
+                newJoint = new Piston((IMyPistonBase)jointBlock, data);
 
-            if (!(jointBlock is IMyMotorStator))
-                return null;
+            if (jointBlock is IMyMotorStator)
+            {
+                if (jointBlock.BlockDefinition.ToString().Contains("Hinge"))
+                    newJoint = new Hinge((IMyMotorStator)jointBlock, data);
+                else
+                    newJoint = new Rotor((IMyMotorStator)jointBlock, data);
+            }
 
-            if (jointBlock.BlockDefinition.ToString().Contains("Hinge"))
-                return new Hinge((IMyMotorStator)jointBlock, data);
+            if (newJoint != null)
+                JointBin.Add(newJoint);
 
-            return new Rotor((IMyMotorStator)jointBlock, data);
+            return newJoint;
         }
+        static KeyFrame NewKeyFrame(RootData root, JointSet set)
+        {
+            KeyFrame newKFrame = new KeyFrame(root);
 
-        void AppendMagnet(JointSet set, Magnet magnet)
+            for (int i = 0; i < set.Joints.Count; i++)
+            {
+                if (set.Joints[i] is Piston)
+                    continue;
+
+                RootData jfRoot = newKFrame.ParentData(set.Joints[i].Name, i);
+                newKFrame.Jframes.Add(new JointFrame(jfRoot, set.GetJoint(i), Snapping));
+            }
+
+            return newKFrame;
+        }
+        static void AppendMagnet(JointSet set, Magnet magnet)
         {
             if (magnet == null ||
                 set == null)
@@ -3264,7 +3868,7 @@ namespace IngameScript
             if (foot != null)
                 foot.Magnets.Add(magnet);
         }
-        void AppendJoint(JointSet set, Joint joint)
+        static void AppendJoint(JointSet set, Joint joint)
         {
             if (joint == null ||
                 set == null)
@@ -3353,14 +3957,14 @@ namespace IngameScript
                             Static("constructing set...\n");
                             BuildingJoints = true;
                             LoadJointIndex = 0;
-                            SetDataBuffer = load[i];
+                            LoadSetDataBuffer = load[i];
                             LoadCustomDataIndex++;
                             return 0;
 
                         // SEQUENCES //
                         case JframeTag:
                             Static("jFrame:");
-                            JointFrame newJframe = LoadJointFrame(load[i], SetBuffer.GetJoint(jFrameBuffer.Count)); 
+                            JointFrame newJframe = LoadJointFrame(load[i], SetBuffer.GetJoint(jFrameBuffer.Count));
                             if (newJframe.BUILT)
                             {
                                 jFrameBuffer.Add(newJframe);
@@ -3376,6 +3980,19 @@ namespace IngameScript
                             if (newKframe.BUILT)
                             {
                                 kFrameBuffer.Add(newKframe);
+                                jFrameBuffer.Clear();
+                                Static(" added!:\n");
+                            }
+                            else
+                                Static(" failed!:\n");
+                            break;
+
+                        case ZframeTag:
+                            Static("Zero Frame:");
+                            KeyFrame zeroFrame = LoadKeyFrame(load[i], jFrameBuffer);
+                            if (zeroFrame.BUILT)
+                            {
+                                SetBuffer.ZeroFrame = zeroFrame;
                                 jFrameBuffer.Clear();
                                 Static(" added!:\n");
                             }
@@ -3434,14 +4051,14 @@ namespace IngameScript
         {
             if (!SetBuffered)
             {
-                SetBuffer = LoadJointSet(SetDataBuffer, Control, FeetBuffer);
+                SetBuffer = LoadJointSet(LoadSetDataBuffer, DesignatedPlane, FeetBuffer);
                 if (SetBuffer == null)
                 {
                     Static("Set load failed!\n");
                     return true;
                 }
 
-                BlockBuffer = GetBlocks(SetBuffer.GroupName);
+                BlockBuffer = GetBlocksFromGroup(SetBuffer.GroupName);
                 if (BlockBuffer == null || BlockBuffer.Count < 1)
                 {
                     Static("Nothing to load!\n");
@@ -3450,6 +4067,8 @@ namespace IngameScript
 
                 SetBuffered = true;
             }
+
+            SetBuffer.Sort();
 
             for (int i = LoadJointIndex; i < BlockBuffer.Count; i++)
             {
@@ -3474,7 +4093,6 @@ namespace IngameScript
                 }
             }
 
-            SetBuffer.Sort();
             SetBuffered = false;
             return true;
         }
@@ -3489,8 +4107,12 @@ namespace IngameScript
             Static("Starting up...\n");
 
             CurrentWalkSet = GetJointSet(0);
-            CurrentWalkSet.TogglePlaneing(Orientation.MyState());
+
+            CurrentWalkSet.SyncJoints();
+            CurrentWalkSet.SnapShotPlane();
             CurrentWalkSet.InitFootStatus();
+            CurrentWalkSet.TogglePlaneing(Orientation.MyState());
+
             ToggleFlight(!CurrentWalkSet.Locked);
 
             if (CurrentWalkSet.Sequences == null ||
@@ -3502,98 +4124,86 @@ namespace IngameScript
             LoadWalk(CurrentWalkSet.GetSequence(0));
         }
 
-        JointSet LoadJointSet(string input, IMyTerminalBlock plane, List<Foot> footBuffer)
-        {
-            JointSet newSet = new JointSet(this, plane, footBuffer);
-            newSet.Load(input);
-            return newSet;
-        }
+        JointSet LoadJointSet(string input, IMyTerminalBlock plane, List<Foot> footBuffer) { return new JointSet(input, plane, footBuffer); }
         Joint LoadJoint(IMyMechanicalConnectionBlock jointBlock)
         {
-            Joint newJoint = null;
+            Joint loadedJoint = null;
+
             if (jointBlock is IMyPistonBase)
-                newJoint = new Piston(this, (IMyPistonBase)jointBlock);
+                loadedJoint = new Piston((IMyPistonBase)jointBlock);
 
             if (jointBlock is IMyMotorStator)
             {
                 if (jointBlock.BlockDefinition.ToString().Contains("Hinge"))
-                    newJoint = new Hinge(this, (IMyMotorStator)jointBlock);
+                    loadedJoint = new Hinge((IMyMotorStator)jointBlock);
                 else
-                    newJoint = new Rotor(this, (IMyMotorStator)jointBlock);
+                    loadedJoint = new Rotor((IMyMotorStator)jointBlock);
             }
 
-            if (newJoint != null)
-                newJoint.Load(jointBlock.CustomData);
+            if (loadedJoint != null)
+                JointBin.Add(loadedJoint);
 
-            return newJoint;
+            return loadedJoint;
         }
-        Magnet LoadMagnet(IMyLandingGear gear)
-        {
-            Magnet newMagnet = new Magnet(this, gear);
-            newMagnet.Load(gear.CustomData);
-            return newMagnet;
-        }
-        Foot LoadFoot(string input)
-        {
-            Foot newFoot = new Foot(this);
-            newFoot.Load(input);
-            return newFoot;
-        }
-        Sequence LoadSequence(string input, JointSet set, List<KeyFrame> buffer)
-        {
-            Sequence newSeq = new Sequence(this, set, buffer);
-            newSeq.Load(input);
-            return newSeq;
-        }
-        KeyFrame LoadKeyFrame(string input, List<JointFrame> buffer)
-        {
-            KeyFrame newKframe = new KeyFrame(this, buffer);
-            newKframe.Load(input);
-            return newKframe;
-        }
-        JointFrame LoadJointFrame(string input, Joint joint)
-        {
-            JointFrame newJframe = new JointFrame(this, joint);
-            newJframe.Load(input);
-            return newJframe;
-        }
+        Magnet LoadMagnet(IMyLandingGear gear) { return new Magnet(gear); }
+        Foot LoadFoot(string input) { return new Foot(input); }
+        Sequence LoadSequence(string input, JointSet set, List<KeyFrame> buffer) { return new Sequence(input, set, buffer); }
+        KeyFrame LoadKeyFrame(string input, List<JointFrame> buffer) { return new KeyFrame(input, buffer); }
+        JointFrame LoadJointFrame(string input, Joint joint) { return new JointFrame(input, joint); }
         #endregion
 
         #region SAVE
-        delegate int SaveJob();
 
         int DataSave()
         {
-            if (!DataInit)
-                SaveInit();
+            if (!SaveInit)
+                SaveInitializer();
 
             int setsResult = SaveStack(SaveSet, eRoot.JSET, JsetBin);
             if (setsResult != 1)
                 return setsResult;
 
-            DataInit = false;
-            ResetSaveIndex(eRoot.JSET);
+            SaveInit = false;
             return 1;
         }
-
-        int SaveStack(SaveJob job, eRoot element, List<Root> roots)
+        int SaveStack(SaveJob job, eRoot element, List<Root> roots = null)
         {
-            Static($"SaveStack: {element}\n");
-            if (Saving(element) >= roots.Count)
+            Static($"Enter Stack: {element}\n");
+
+            if (roots == null)
+                return job(); // Let job handle fail condition
+
+            if (Saving(element) >= roots.Count) // Finished save loop
+            {
+                Static($"Skip Stack: {element}\n");
                 return 1;
+            }
+
 
             for (int index = Saving(element); index < roots.Count; index++)
             {
                 SetSaveIndex(element, index);
-                if (CheckCallLimit())
+                if (CheckCallLimit()) // Call stack limiter
+                {
+                    Static($"Call break {element}\n");
                     return 0;
+                }
+
 
                 int result = job();
                 if (result != 1)
-                    return result;
+                {
+                    Static($"Save break {element} : {result}\n");
+                    return result; // Save break
+                }
+
+
+                if (index == roots.Count - 1)
+                    Static($"Save Stack {element} Complete!\n");
             }
 
-            IncrementSave(element);
+            IncrementSaveIndex(element);
+            Static($"Exit Stack: {element}\n");
             return 1;
         }
         int SaveSet()
@@ -3602,29 +4212,39 @@ namespace IngameScript
             if (set == null)
                 return -1;
 
-            int feetResult = SaveStack(SaveFoot, eRoot.FOOT, set.Feet);
-            if (feetResult != 1)
-                return feetResult;
-
-            int jointsResult = SaveStack(SaveJoint, eRoot.JOINT, set.Joints);
-            if (jointsResult != 1)
-                return jointsResult;
-
-            if (!SetSaved)
+            if (!JointsSaved)
             {
+                int feetResult = SaveStack(SaveFoot, eRoot.FOOT, set.Feet);
+                if (feetResult != 1)
+                    return feetResult;
+
+                int jointsResult = SaveStack(SaveJoint, eRoot.JOINT, set.Joints);
+                if (jointsResult != 1)
+                    return jointsResult;
+
                 SaveData.Append($"{set.SaveData()}\n");
-                SetSaved = true;
+                JointsSaved = true;
             }
 
-            int seqResult = SaveStack(SaveSequence, eRoot.SEQUENCE, set.Sequences);
-            if (seqResult != 1)
-                return seqResult;
+            {
+                int seqResult = SaveStack(SaveSequence, eRoot.SEQUENCE, set.Sequences);
+                if (seqResult != 1)
+                    return seqResult;
+            }
+
+            int zeroFrameResult = SaveStack(SaveZeroFrame, eRoot.K_FRAME);
+            if (zeroFrameResult != 1)
+            {
+                set.GenerateZeroFrame();
+                //return 0;
+            }
+
+            SaveData.Append($"{JointSetTag}:{set.Name}:END OF SAVE\n");
 
             ResetSaveIndex(eRoot.FOOT);
             ResetSaveIndex(eRoot.JOINT);
             ResetSaveIndex(eRoot.SEQUENCE);
-            SetSaved = false;
-            SaveData.Append($"{JointSetTag}:{set.Name}:LOAD FINISHED\n");
+
             return 1;
         }
         int SaveFoot()
@@ -3641,9 +4261,11 @@ namespace IngameScript
             if (magResult != 1)
                 return magResult;
 
+            SaveData.Append($"{foot.SaveData()}\n");
+
             ResetSaveIndex(eRoot.TOE);
             ResetSaveIndex(eRoot.MAGNET);
-            SaveData.Append($"{foot.SaveData()}\n");
+
             return 1;
         }
         int SaveJoint()
@@ -3667,17 +4289,27 @@ namespace IngameScript
             if (seq == null)
                 return -1;
 
-            int frameResult = SaveStack(SaveKeyFrame, eRoot.K_FRAME, seq.Frames);
+            int frameResult = SaveStack(SaveAnimFrame, eRoot.K_FRAME, seq.Frames);
             if (frameResult != 1)
                 return frameResult;
 
-            ResetSaveIndex(eRoot.K_FRAME);
             SaveData.Append($"{seq.SaveData()}\n");
+
+            ResetSaveIndex(eRoot.K_FRAME);
+
             return 1;
         }
-        int SaveKeyFrame()
+        int SaveZeroFrame()
         {
-            KeyFrame frame = GetSavingKeyFrame();
+            return SaveKeyFrame(GetSavingSet().ZeroFrame);
+        }
+        int SaveAnimFrame()
+        {
+            return SaveKeyFrame(GetSavingKeyFrame());
+        }
+        int SaveKeyFrame(KeyFrame frame)
+        {
+            //KeyFrame frame = zeroFrame ?  : GetSavingKeyFrame();
             if (frame == null)
                 return -1;
 
@@ -3685,8 +4317,10 @@ namespace IngameScript
             if (frameResult != 1)
                 return frameResult;
 
-            ResetSaveIndex(eRoot.J_FRAME);
             SaveData.Append($"{frame.SaveData()}\n");
+
+            ResetSaveIndex(eRoot.J_FRAME);
+
             return 1;
         }
         int SaveJointFrame()
@@ -3698,20 +4332,23 @@ namespace IngameScript
             SaveData.Append($"{frame.SaveData()}\n");
             return 1;
         }
-        int Saving(eRoot root)
+        static int Saving(eRoot root)
         {
             return SaveObjectIndex[(int)root];
         }
 
-        void SaveInit()
+        void SaveInitializer()
         {
             SaveData.Clear();
 
             SaveToggles();
             SaveSettings();
+            ResetSaveIndex(eRoot.JSET);
 
-            DataInit = true;
             Static("Save Init complete!\n");
+
+            JointsSaved = false;
+            SaveInit = true;
         }
         void SaveSettings()
         {
@@ -3727,7 +4364,7 @@ namespace IngameScript
                 SaveData.Append($":{option.MyState()}");
             SaveData.Append("\n");
         }
-        void IncrementSave(eRoot root)
+        void IncrementSaveIndex(eRoot root)
         {
             SaveObjectIndex[(int)root]++;
         }
@@ -3742,65 +4379,38 @@ namespace IngameScript
         #endregion
 
         #region GETTERS
-        IMyTextSurface GetSurface(Screen screen)
+
+        static GUIMode GetCurrentGuiMode() { return PROG._CurrentGUIMode; }
+        static TimeSpan GetGridTimeSinceLastRun() { return PROG.Runtime.TimeSinceLastRun; }
+        static void GetGridBlockGroups(List<IMyBlockGroup> groups) { PROG.GridTerminalSystem.GetBlockGroups(groups); }
+        static void GetGridBlocksOfType<T>(List<T> blocks) where T : class { PROG.GridTerminalSystem.GetBlocksOfType(blocks); }
+        static IMyTextSurface GetSurface(Screen screen) { try { return Screens[(int)screen]; } catch { return null; } }
+        static List<IMyTerminalBlock> GetBlocksFromGroup(string groupName)
         {
-            try { return Screens[(int)screen]; }
-            catch { return null; }
-        }
-        List<IMyTerminalBlock> GetBlocks(string groupName)
-        {
-            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(groupName);
+            if (groupName == null)
+                return null;
+
+            IMyBlockGroup group = PROG.GridTerminalSystem.GetBlockGroupWithName(groupName);
             if (group == null)
                 return null;
 
-            return GetBlocks(group);
+            return GetBlocksFromGroup(group);
         }
-        List<IMyTerminalBlock> GetBlocks(IMyBlockGroup group)
+        static List<IMyTerminalBlock> GetBlocksFromGroup(IMyBlockGroup group)
         {
-
             List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
             group.GetBlocks(blocks);
             return blocks;
         }
-        JointSet GetJointSet(int index)
+        static JointSet GetJointSet(int index) { return index < 0 || index > JsetBin.Count ? null : (JointSet)JsetBin[index]; }
+        static JointSet GetSavingSet() { return GetJointSet(Saving(eRoot.JSET)); }
+        static JointSet GetSelectedSet()
         {
-            if (index < 0 || index > JsetBin.Count)
-                return null;
-            return (JointSet)JsetBin[index];
+            int? check = GetCurrentPage()?.SelectedIndex(eRoot.JSET);
+            return check.HasValue ? GetJointSet(check.Value) : null;
         }
-        JointSet GetSavingSet()
-        {
-            return GetJointSet(Saving(eRoot.JSET));
-        }
-        JointSet GetSelectedSet()
-        {
-            return GetJointSet(Selected(GUILayer.JSET));
-        }
-        Root GetSelectedRoot()
-        {
-            if (CurrentGUILayer == GUILayer.JSET)
-                return GetSelectedSet();
-
-            return GetSelectedAnim();
-        }
-        Animation GetSelectedAnim()
-        {
-            switch (CurrentGUILayer)
-            {
-                case GUILayer.SEQUENCE:
-                    return GetSelectedSequence();
-
-                case GUILayer.K_FRAME:
-                    return GetSelectedKeyFrame();
-
-                case GUILayer.J_FRAME:
-                    return GetSelectedJointFrame();
-
-                default:
-                    return null;
-            }
-        }
-        Sequence GetSavingSequence()
+        static Animation GetSelectedAnim() { return GetCurrentPage()?.SelectedRoot() as Animation; }
+        static Sequence GetSavingSequence()
         {
             JointSet set = GetSavingSet();
             if (set == null)
@@ -3808,95 +4418,77 @@ namespace IngameScript
 
             return set.GetSequence(Saving(eRoot.SEQUENCE));
         }
-        Sequence GetSelectedSequence()
+        static Sequence GetSelectedSequence()
         {
             JointSet set = GetSelectedSet();
             if (set == null)
                 return null;
-            return set.GetSequence(Selected(GUILayer.SEQUENCE));
+            int? check = GetCurrentPage()?.SelectedIndex(eRoot.SEQUENCE);
+            return check.HasValue ? set.GetSequence(check.Value) : null;
         }
-        KeyFrame GetSavingKeyFrame()
+        static KeyFrame GetSavingKeyFrame()
         {
             Sequence seq = GetSavingSequence();
             if (seq == null)
                 return null;
             return seq.GetKeyFrame(Saving(eRoot.K_FRAME));
         }
-        KeyFrame GetSelectedKeyFrame()
+        static KeyFrame GetSelectedKeyFrame()
         {
             Sequence seq = GetSelectedSequence();
             if (seq == null)
                 return null;
-            return seq.GetKeyFrame(Selected(GUILayer.K_FRAME));
+            int? check = GetCurrentPage()?.SelectedIndex(eRoot.K_FRAME);
+            return check.HasValue ? seq.GetKeyFrame(check.Value) : null;
         }
-        JointFrame GetSavingJointFrame()
+        static JointFrame GetSavingJointFrame()
         {
             KeyFrame frame = GetSavingKeyFrame();
             if (frame == null)
                 return null;
-            return frame.GetJointFrame(Saving(eRoot.J_FRAME));
+            return frame.GetJointFrameByFrameIndex(Saving(eRoot.J_FRAME));
         }
-        JointFrame GetSelectedJointFrame()
+        static JointFrame GetSelectedJointFrame()
         {
             KeyFrame frame = GetSelectedKeyFrame();
             if (frame == null)
                 return null;
-            return frame.GetJointFrame(Selected(GUILayer.J_FRAME));
+            int? check = GetCurrentPage()?.SelectedIndex(eRoot.J_FRAME);
+            return check.HasValue ? frame.GetJointFrameByFrameIndex(check.Value) : null;
         }
-        Foot GetSavingFoot()
+        static Foot GetSavingFoot()
         {
             JointSet set = GetSavingSet();
             if (set == null)
                 return null;
             return set.GetFoot(Saving(eRoot.FOOT));
         }
-        Joint GetSavingJoint()
+        static Joint GetSavingJoint()
         {
             JointSet set = GetSavingSet();
             if (set == null)
                 return null;
             return set.GetJoint(Saving(eRoot.JOINT));
         }
-        Joint GetSavingToe()
+        static Joint GetSavingToe()
         {
             Foot foot = GetSavingFoot();
             if (foot == null)
                 return null;
             return foot.GetToe(Saving(eRoot.TOE));
         }
-        Magnet GetSavingMagnet()
+        static Magnet GetSavingMagnet()
         {
             Foot foot = GetSavingFoot();
             if (foot == null)
                 return null;
             return foot.GetMagnet(Saving(eRoot.MAGNET));
         }
-        int GetSelectedCount()
+        static Page GetCurrentPage()
         {
-            switch (CurrentGUILayer)
-            {
-                case GUILayer.JSET:
-                    return JsetBin.Count;
-
-                case GUILayer.SEQUENCE:
-                    if (GetSelectedSet() == null)
-                        return 0;
-                    return GetSelectedSet().Sequences.Count;
-
-                case GUILayer.K_FRAME:
-                    if (GetSelectedSequence() == null)
-                        return 0;
-                    return GetSelectedSequence().Frames.Count;
-
-                case GUILayer.J_FRAME:
-                    if (GetSelectedKeyFrame() == null)
-                        return 0;
-                    return GetSelectedKeyFrame().Jframes.Count;
-
-                default:
-                    return 0;
-            }
+            return Pages[GetCurrentGuiMode()];
         }
+        
         #endregion
 
     }

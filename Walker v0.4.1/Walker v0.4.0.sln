@@ -1,11 +1,15 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.32510.428
+# Visual Studio Version 17
+VisualStudioVersion = 17.6.33829.357
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Walker v0.5.1", "Walker v0.5.1.csproj", "{F5F2FF12-3622-48B1-8ED8-D040739782D5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Walker v0.6.1", "Walker v0.6.1.csproj", "{F5F2FF12-3622-48B1-8ED8-D040739782D5}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ARM", "..\ARM\ARM.csproj", "{4C67583C-27CD-4B49-9B80-6B5B05857542}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MechPeripheralTesting", "..\MechPeripheralTesting\MechPeripheralTesting.csproj", "{ABC19259-FFC4-41EB-B319-4E9A8907A031}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Walker_WORKING", "..\Walker_WORKING\Walker_WORKING.csproj", "{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -16,6 +20,10 @@ Global
 		{F5F2FF12-3622-48B1-8ED8-D040739782D5}.Debug|x64.Build.0 = Debug|x64
 		{4C67583C-27CD-4B49-9B80-6B5B05857542}.Debug|x64.ActiveCfg = Debug|x64
 		{4C67583C-27CD-4B49-9B80-6B5B05857542}.Debug|x64.Build.0 = Debug|x64
+		{ABC19259-FFC4-41EB-B319-4E9A8907A031}.Debug|x64.ActiveCfg = Debug|x64
+		{ABC19259-FFC4-41EB-B319-4E9A8907A031}.Debug|x64.Build.0 = Debug|x64
+		{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}.Debug|x64.ActiveCfg = Debug|x64
+		{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}.Debug|x64.Build.0 = Debug|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
