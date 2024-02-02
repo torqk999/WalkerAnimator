@@ -271,7 +271,7 @@ namespace IngameScript
 
         static bool SavingData = false;
         static bool LoadingData = true;
-        static bool SaveInit = false;
+        static bool SaveInit = true;
         static bool JointsSaved = false;
         static bool SetBuffered = false;
         static bool BuildingJoints = false;
@@ -367,7 +367,7 @@ namespace IngameScript
 
             PARAM = 8,
         }
-        const int ParamCount = 6;
+        const int ParamCount = 7;
         enum PARAM
         {
             TAG = 0,
@@ -600,6 +600,7 @@ namespace IngameScript
             public int MyIndex;
             public int ParentIndex;
             public bool BUILT;
+            string[] SaveBuffer = new string[ParamCount];
 
             public Root()
             {
@@ -649,22 +650,20 @@ namespace IngameScript
 
                     ParentIndex = int.Parse(data[(int)PARAM.pIX]);
 
+                    
+
                     return true;
                 }
                 catch { return false; }
             }
             public string SaveData()
             {
-                string[] buffer = new string[Enum.GetNames(typeof(PARAM)).Length];
-                for (int i = 0; i < buffer.Length; i++)
-                    buffer[i] = "";
-
-                saveData(buffer);
+                saveData(SaveBuffer);
 
                 RootDataBuilder.Clear();
 
-                for (int i = 0; i < buffer.Length; i++)
-                    RootDataBuilder.Append($"{buffer[i]}:");
+                for (int i = 0; i < SaveBuffer.Length; i++)
+                    RootDataBuilder.Append($"{SaveBuffer[i]}:");
 
                 return RootDataBuilder.ToString();
             }
@@ -696,6 +695,511 @@ namespace IngameScript
                     return x.MyIndex.CompareTo(y.MyIndex);
                 else
                     return 0;
+            }
+        }
+
+        class JointSet : Root
+        {
+            public string GroupName;
+
+            public IMyTerminalBlock Plane;
+            public List<Root> Feet = new List<Root>();
+            public List<Root> Joints = new List<Root>();
+            public List<Root> Sequences = new List<Root>();
+
+            public KeyFrame ZeroFrame = null;
+
+            public MatrixD TargetPlane;
+            public MatrixD TurnPlane;
+            public MatrixD BufferPlane;
+            public Vector3D PlaneBuffer;
+            public Vector3D TurnBuffer;
+
+            public bool Locked;
+            public bool StepInterrupt;
+            public int LockedIndex;
+            int ReleaseTimer = 0;
+
+            public JointSet(RootData root, IMyTerminalBlock plane, string groupName) : base(root)
+            {
+                TAG = JointSetTag;
+                Plane = plane;
+                GroupName = groupName;
+                GenerateZeroFrame();
+            }
+
+            public JointSet(string input, IMyTerminalBlock plane, List<Foot> buffer) : base()
+            {
+                Plane = plane;
+                Feet.AddRange(buffer);
+                BUILT = Load(input);
+            }
+
+            public void GenerateZeroFrame()
+            {
+                //PROG.LibraryBuilder.Add("Generating Zero Frame!");
+                ZeroFrame = NewKeyFrame(ParentData("Zero Frame"), this);
+                //PROG.LibraryBuilder.Add("Generated!");
+            }
+
+            public Foot GetFoot(int index)
+            {
+                if (index < 0 || index >= Feet.Count)
+                    return null;
+                return (Foot)Feet[index];
+            }
+            public Joint GetJoint(int index)
+            {
+                if (index < 0 || index >= Joints.Count)
+                    return null;
+                return (Joint)Joints[index];
+            }
+            public Sequence GetSequence(int index)
+            {
+                if (index < 0 || index >= Sequences.Count)
+                    return null;
+                return (Sequence)Sequences[index];
+            }
+
+
+            public override void Insert(int index, Root root)
+            {
+                if (root is Sequence)
+                {
+                    Sequence seq = (Sequence)root;
+                    if (index >= Sequences.Count)
+                    {
+                        seq.MyIndex = Sequences.Count;
+                        Sequences.Add(seq);
+                        return;
+                    }
+                    Sequences.Insert(index, seq);
+                    ReIndex();
+                }
+            }
+            public override void ReIndex()
+            {
+                for (int i = 0; i < Joints.Count; i++)
+                    Joints[i].MyIndex = i;
+
+                for (int i = 0; i < Sequences.Count; i++)
+                    Sequences[i].MyIndex = i;
+            }
+            public override void Sort()
+            {
+                Joints.Sort(MySort);
+                Sequences.Sort(MySort);
+            }
+            protected override bool Load(string[] data)//, Option option = null)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { GroupName = data[(int)PARAM.GroupName]; }
+                catch { GroupName = null; }
+                return true;
+            }
+            protected override void saveData(string[] buffer)
+            {
+                base.saveData(buffer);
+                buffer[(int)PARAM.GroupName] = GroupName;
+            }
+
+            public bool UpdateJoints()
+            {
+                bool withinThreshold = true;
+
+                foreach (Joint joint in Joints)
+                {
+                    if (!joint.IsAlive())
+                        continue;
+
+                    joint.UpdateJoint(StatorTarget.MyState());
+                    if (withinThreshold)
+                        withinThreshold = joint.TargetThreshold;
+                }
+
+                return withinThreshold;
+            }
+            public bool UpdateFootLockStatus()
+            {
+                ReleaseTimer -= 1;
+                ReleaseTimer = ReleaseTimer < 0 ? 0 : ReleaseTimer;
+
+                if (StepInterrupt)
+                    return false;
+
+                bool oldState = Locked;
+                Foot locked = GetFoot(LockedIndex);
+                Locked = locked != null && locked.CheckLocked();
+
+
+                if (!Locked && ReleaseTimer <= 0) // TouchDown
+                    NewLockCandidate();
+
+                UnlockOtherFeet();
+
+                bool changed = oldState != Locked;
+
+                return changed;
+            }
+            public bool CheckStep(bool forward = true)
+            {
+                Foot step = GetFoot(StepIndex(forward));
+                Foot release = GetFoot(LockedIndex);
+
+                bool touch = step != null && step.CheckTouching();
+                bool locked = step != null && step.CheckLocked();
+                bool released = release != null && !release.CheckLocked();
+
+                if (!touch && !locked) // Any attempt to step?
+                {
+                    StepInterrupt = false;
+                    return false;
+                }
+
+                StepInterrupt = true;
+
+                if (touch) // Initial contact
+                    step.ToggleLock(); // lock foot
+
+                if (locked && release != null) // Initial lock
+                    release.ToggleLock(false); // Release
+
+                if (StepInterrupt && released) // Initial release
+                    StepInterrupt = false;
+
+                return !StepInterrupt; // Still Stepping?
+            }
+            public void UnlockAllFeet()
+            {
+                ReleaseTimer = ReleaseCount;
+                LockedIndex = -1;
+                UnlockOtherFeet();
+            }
+            public void IncrementStepping(ClockMode mode)
+            {
+                IncrementStepping(mode != ClockMode.REV ? 1 : -1);
+            }
+            public void InitFootStatus()
+            {
+                NewLockCandidate();
+                UnlockOtherFeet();
+
+                foreach (Foot foot in Feet)
+                    foot.GearInit();
+            }
+
+            int StepIndex(bool forward)
+            {
+                int stepIndex = LockedIndex + (forward ? 1 : -1);
+                stepIndex = stepIndex < 0 ? Feet.Count - 1 : stepIndex >= Feet.Count ? 0 : stepIndex;
+                return stepIndex;
+            }
+            void UnlockOtherFeet()
+            {
+                Foot expected = GetFoot(LockedIndex);
+                foreach (Foot foot in Feet)
+                    if (foot != expected)
+                        foot.ToggleLock(false);
+            }
+            void IncrementStepping(int incr)
+            {
+                SetLockedIndex(LockedIndex + incr);
+            }
+            void SetLockedIndex(int step)
+            {
+                LockedIndex = step;
+                LockedIndex = LockedIndex < 0 ? Feet.Count - 1 : LockedIndex >= Feet.Count ? 0 : LockedIndex;
+            }
+            void NewLockCandidate()
+            {
+
+                //StreamDlog("New Lock Candidate...");
+                for (int i = 0; i < Feet.Count; i++)
+                {
+                    Foot check = GetFoot(i);
+                    if (check.CheckLocked() || check.CheckTouching())
+                    {
+                        check.ToggleLock(true);
+                        LockedIndex = i;
+                        Locked = true;
+
+                        if (CurrentWalk != null)
+                        {
+                            CurrentWalk.LoadKeyFrames(true, check.LockIndex);
+                            CurrentWalk.StepDelay = true;
+                        }
+
+
+                        return;
+                    }
+                }
+
+                Locked = false;
+                LockedIndex = -1;
+            }
+
+            public void SyncJoints()
+            {
+                foreach (Joint joint in Joints)
+                    joint.Sync();
+            }
+            public void ZeroJointSet(KeyFrame frame = null)
+            {
+                if (frame == null)
+                    foreach (Joint joint in Joints)
+                        joint.OverwriteAnimTarget(0);
+                else
+                    foreach (JointFrame jFrame in frame.Jframes)
+                        jFrame.Joint.OverwriteAnimTarget(jFrame.MySetting.MyValue());
+            }
+            public void SnapShotPlane()
+            {
+                if (Plane == null)
+                    return;
+
+                TargetPlane = Plane.WorldMatrix;
+                TurnPlane = Plane.WorldMatrix;
+            }
+            public void TogglePlaneing(bool toggle)
+            {
+                if (toggle && Locked)
+                    SnapShotPlane();
+
+                foreach (Foot foot in Feet)
+                    foot.UpdateFootPlaneing(toggle && Locked);
+            }
+            void UpdatePlaneBuffer(Vector3 playerInput)
+            {
+                playerInput *= PlaneScalar;
+
+                BufferPlane = MatrixD.CreateFromYawPitchRoll(playerInput.Y, playerInput.X, playerInput.Z);
+
+                TargetPlane = MatrixD.Multiply(BufferPlane, TargetPlane);
+
+                BufferPlane = MatrixD.Multiply(TargetPlane, MatrixD.Invert(Plane.WorldMatrix));
+
+                MatrixD.GetEulerAnglesXYZ(ref BufferPlane, out PlaneBuffer);
+            }
+            void UpdateTurnBuffer(double playerTurn)
+            {
+                TurnBuffer.Y = playerTurn * TurnScalar;
+            }
+            public bool UpdatePlanars()
+            {
+                if (Plane == null)
+                    return false;
+
+                UpdatePlaneBuffer(InputRotationBuffer);
+                UpdateTurnBuffer(InputTurnBuffer);
+
+                bool safety = false;
+                for (int i = 0; i < 3; i++)
+                    if (Math.Abs(PlaneBuffer.GetDim(i)) > SAFETY)
+                    {
+                        //TogglePlaneing(false);
+                        SnapShotPlane();
+                        //safety = true;
+                        break;
+                    }
+
+                foreach (Foot foot in Feet)
+                {
+                    if (foot != null)
+                    {
+                        //StreamDlog($"Updateing: {foot.Name}");
+                        foot.GenerateAxisMagnitudes(Plane.WorldMatrix);
+                        for (int i = 0; i < foot.Planars.Count; i++)
+                            if (foot.Planars[i] != null)
+                            {
+                                Joint plane = foot.GetPlanar(i);
+                                //StreamDlog($"Correcting: {plane.Name}\n" +
+                                //    $"Planeing: {plane.Planeing}");
+
+                                if (safety)
+                                {
+                                    //StreamDlog("Safety break");
+                                    plane.PlaneCorrection = 0;
+                                    continue;
+                                }
+
+                                if (plane.TAG == TurnTag && !foot.Locked)
+                                {
+                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, TurnBuffer);
+                                    DebugBinStream.Append($"PlaneCorrection Lifted {i}: {plane.PlaneCorrection}\n");
+                                }
+
+                                else
+                                {
+                                    //StreamDlog("Planeing");
+                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, -PlaneBuffer);
+                                }
+                            }
+                    }
+                }
+                return true;
+            }
+            double GeneratePlaneCorrection(Joint joint, Vector3 planarRatios, Vector3 angleCorrections)
+            {
+                if (joint == null)
+                    return 0;
+
+                double output = 0;
+                for (int i = 0; i < 3; i++)
+                {
+                    double planarsum = joint.PlanarDots.GetDim(i) * planarRatios.GetDim(i) * (angleCorrections.GetDim(i) * RAD2DEG);
+
+                    /*
+                    
+                     1,0,0
+                     0,1,0
+                     0,0,-1
+
+                     */
+
+                    // x = + / y = + / z = -
+                    //output = i == 2 ? output - planarsum : output + planarsum;
+                    output += planarsum;
+                }
+                return output;
+            }
+        }
+        class Foot : Root
+        {
+            public List<Root> Toes = new List<Root>();
+            public List<Root> Planars = new List<Root>();
+            public List<Root> Magnets = new List<Root>();
+
+            public int LockIndex;
+            public bool Locked = false;
+            public bool Planeing;
+            public Vector3 PlanarRatio;
+
+            public Foot(RootData data) : base(data)
+            {
+                TAG = FootTag;
+            }
+
+            public Foot(string input) : base()
+            {
+                StaticDlog("Foot Constructor:");
+                BUILT = Load(input);
+            }
+
+            public Joint GetToe(int index)
+            {
+                if (index < 0 || index >= Toes.Count)
+                    return null;
+                return (Joint)Toes[index];
+            }
+            public Joint GetPlanar(int index)
+            {
+                if (index < 0 || index >= Planars.Count)
+                    return null;
+                return (Joint)Planars[index];
+            }
+            public Magnet GetMagnet(int index)
+            {
+                if (index < 0 || index >= Magnets.Count)
+                    return null;
+                return (Magnet)Magnets[index];
+            }
+            public void GearInit()
+            {
+                foreach (Magnet magnet in Magnets)
+                    magnet.InitializeGear();
+            }
+            public void ToggleLock(bool locking = true)
+            {
+                foreach (Magnet magnet in Magnets)
+                    magnet.ToggleLock(locking);
+
+                Locked = locking;
+                ToggleGrip(locking);
+                ToggleForce(locking);
+                UpdateFootPlaneing(Planeing);
+            }
+            public bool CheckTouching()
+            {
+                bool result = false;
+                foreach (Magnet magnet in Magnets)
+                    if (magnet.IsAlive() && magnet.IsTouching())
+                    {
+                        result = true;
+                        break;
+                    }
+
+                //StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
+                return result;
+            }
+            public bool CheckLocked()
+            {
+                bool result = false;
+                foreach (Magnet gear in Magnets)
+                    if (gear.IsAlive() && gear.IsLocked())
+                    {
+                        result = true;
+                        break;
+                    }
+
+                //StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
+                return result;
+            }
+            void ToggleGrip(bool gripping = true)
+            {
+                foreach (Joint toe in Toes)
+                    toe.Gripping = gripping;
+            }
+            void ToggleForce(bool maxForce)
+            {
+                foreach (Joint planar in Planars)
+                    planar.SetForce(maxForce);
+            }
+            public void UpdateFootPlaneing(bool toggle)
+            {
+                Planeing = toggle;
+
+                foreach (Joint plane in Planars)
+                    if (plane != null)
+                    {
+                        plane.Planeing = (Locked || (plane.TAG == TurnTag && Strafing.MyState())) && Planeing;
+                    }
+            }
+            public void GenerateAxisMagnitudes(MatrixD plane)
+            {
+                PlanarRatio = Vector3.Zero;
+
+                for (int i = 0; i < Planars.Count; i++)
+                {
+                    if (Planars[i] == null)
+                        continue;
+
+                    GetPlanar(i).UpdatePlanarDot(plane);
+                    for (int j = 0; j < 3; j++)
+                    {
+                        PlanarRatio.SetDim(j, PlanarRatio.GetDim(j) + Math.Abs(GetPlanar(i).PlanarDots.GetDim(j)));
+                    }
+                }
+
+                for (int i = 0; i < 3; i++)
+                    PlanarRatio.SetDim(i, 1 / PlanarRatio.GetDim(i));
+            }
+
+            protected override bool Load(string[] data)
+            {
+                if (!base.Load(data))
+                    return false;
+
+                try { LockIndex = int.Parse(data[(int)PARAM.lIX]); }
+                catch { LockIndex = -1; }
+                return true;
+            }
+
+            protected override void saveData(string[] buffer)
+            {
+                base.saveData(buffer);
+                buffer[(int)PARAM.lIX] = LockIndex.ToString();
             }
         }
         #endregion
@@ -1222,8 +1726,8 @@ namespace IngameScript
                     {GUIKey.ALT_LEFT,   new Button("Previous JointSet", ()=> TableJsetAdjust(-1, 0))   },
                     {GUIKey.ALT_RIGHT,  new Button("Next JointSet",     ()=> TableJsetAdjust(1, 0))    },
 
-                    {GUIKey.FORWARD,    new Button("Shift Up",          ()=> TableShift(0, 1, 0))      },
-                    {GUIKey.BACKWARD,   new Button("Shift Down",        ()=> TableShift(0, -1, 0))     },
+                    {GUIKey.FORWARD,    new Button("Shift Up",          ()=> TableShift(0, -1, 0))     },
+                    {GUIKey.BACKWARD,   new Button("Shift Down",        ()=> TableShift(0, 1, 0))      },
                     {GUIKey.LEFT,       new Button("Shift Left",        ()=> TableShift(-1, 0, 0))     },
                     {GUIKey.RIGHT,      new Button("Shift Right",       ()=> TableShift(1, 0, 0))      },
 
@@ -1275,6 +1779,8 @@ namespace IngameScript
             }
             void FindAndAssignAllJoints()
             {
+                Static("Got called!");
+
                 ReTagBuffer.Clear();
 
                 GetGridBlocksOfType(ReTagBuffer);
@@ -1283,9 +1789,9 @@ namespace IngameScript
                 {
                     Joint freshJoint = NewJoint(joint, JointData.Default);
                     int oldIndex = JointBin.FindIndex(x => x.MyIndex == freshJoint.MyIndex);
-                    if (freshJoint.MyIndex > -1 && oldIndex > -1)
-                        JointBin[oldIndex] = freshJoint;
-                    else
+                    if (freshJoint.MyIndex < 0 || oldIndex < 0)
+                        //JointBin[oldIndex] = freshJoint;
+                    //else
                         JointBin.Add(freshJoint);
                 }
             }
@@ -1571,6 +2077,7 @@ namespace IngameScript
                 return true;
             }
         }
+
         class Joint : Functional
         {
             public int FootIndex;
@@ -1621,7 +2128,6 @@ namespace IngameScript
                 Connection = mechBlock;
                 Connection.Enabled = true;
                 BUILT = Load(mechBlock == null ? null : mechBlock.CustomData);
-                StaticDlog("Force Set!");
             }
             public bool IsAlive()
             {
@@ -1661,6 +2167,7 @@ namespace IngameScript
             }
             protected override void saveData(string[] buffer)
             {
+                base.saveData(buffer);
                 buffer[(int)PARAM.fIX] = FootIndex.ToString();
                 buffer[(int)PARAM.sIX] = SyncIndex.ToString();
                 buffer[(int)PARAM.GripDirection] = GripDirection.ToString();
@@ -2016,6 +2523,7 @@ namespace IngameScript
 
             protected override void saveData(string[] buffer)
             {
+                base.saveData(buffer);
                 buffer[(int)PARAM.fIX] = FootIndex.ToString();
             }
 
@@ -2057,509 +2565,6 @@ namespace IngameScript
         #endregion
 
         #region ANIMATION
-        class JointSet : Root
-        {
-            public string GroupName;
-
-            public IMyTerminalBlock Plane;
-            public List<Root> Feet = new List<Root>();
-            public List<Root> Joints = new List<Root>();
-            public List<Root> Sequences = new List<Root>();
-
-            public KeyFrame ZeroFrame = null;
-
-            public MatrixD TargetPlane;
-            public MatrixD TurnPlane;
-            public MatrixD BufferPlane;
-            public Vector3D PlaneBuffer;
-            public Vector3D TurnBuffer;
-
-            public bool Locked;
-            public bool StepInterrupt;
-            public int LockedIndex;
-            int ReleaseTimer = 0;
-
-            public JointSet(RootData root, IMyTerminalBlock plane, string groupName) : base(root)
-            {
-                TAG = JointSetTag;
-                Plane = plane;
-                GroupName = groupName;
-                GenerateZeroFrame();
-            }
-
-            public JointSet(string input, IMyTerminalBlock plane, List<Foot> buffer) : base()
-            {
-                Plane = plane;
-                Feet.AddRange(buffer);
-                BUILT = Load(input);
-            }
-
-            public void GenerateZeroFrame()
-            {
-                //PROG.LibraryBuilder.Add("Generating Zero Frame!");
-                ZeroFrame = NewKeyFrame(ParentData("Zero Frame"), this);
-                //PROG.LibraryBuilder.Add("Generated!");
-            }
-
-            public Foot GetFoot(int index)
-            {
-                if (index < 0 || index >= Feet.Count)
-                    return null;
-                return (Foot)Feet[index];
-            }
-            public Joint GetJoint(int index)
-            {
-                if (index < 0 || index >= Joints.Count)
-                    return null;
-                return (Joint)Joints[index];
-            }
-            public Sequence GetSequence(int index)
-            {
-                if (index < 0 || index >= Sequences.Count)
-                    return null;
-                return (Sequence)Sequences[index];
-            }
-
-
-            public override void Insert(int index, Root root)
-            {
-                if (root is Sequence)
-                {
-                    Sequence seq = (Sequence)root;
-                    if (index >= Sequences.Count)
-                    {
-                        seq.MyIndex = Sequences.Count;
-                        Sequences.Add(seq);
-                        return;
-                    }
-                    Sequences.Insert(index, seq);
-                    ReIndex();
-                }
-            }
-            public override void ReIndex()
-            {
-                for (int i = 0; i < Joints.Count; i++)
-                    Joints[i].MyIndex = i;
-
-                for (int i = 0; i < Sequences.Count; i++)
-                    Sequences[i].MyIndex = i;
-            }
-            public override void Sort()
-            {
-                Joints.Sort(MySort);
-                Sequences.Sort(MySort);
-            }
-            protected override bool Load(string[] data)//, Option option = null)
-            {
-                if (!base.Load(data))
-                    return false;
-
-                try { GroupName = data[(int)PARAM.GroupName]; }
-                catch { GroupName = null; }
-                return true;
-            }
-            protected override void saveData(string[] buffer)
-            {
-                buffer[(int)PARAM.GroupName] = GroupName;
-            }
-
-            public bool UpdateJoints()
-            {
-                bool withinThreshold = true;
-
-                foreach (Joint joint in Joints)
-                {
-                    if (!joint.IsAlive())
-                        continue;
-
-                    joint.UpdateJoint(StatorTarget.MyState());
-                    if (withinThreshold)
-                        withinThreshold = joint.TargetThreshold;
-                }
-
-                return withinThreshold;
-            }
-            public bool UpdateFootLockStatus()
-            {
-                ReleaseTimer -= 1;
-                ReleaseTimer = ReleaseTimer < 0 ? 0 : ReleaseTimer;
-
-                if (StepInterrupt)
-                    return false;
-
-                bool oldState = Locked;
-                Foot locked = GetFoot(LockedIndex);
-                Locked = locked != null && locked.CheckLocked();
-
-
-                if (!Locked && ReleaseTimer <= 0) // TouchDown
-                    NewLockCandidate();
-
-                UnlockOtherFeet();
-
-                bool changed = oldState != Locked;
-
-                return changed;
-            }
-            public bool CheckStep(bool forward = true)
-            {
-                Foot step = GetFoot(StepIndex(forward));
-                Foot release = GetFoot(LockedIndex);
-
-                bool touch = step != null && step.CheckTouching();
-                bool locked = step != null && step.CheckLocked();
-                bool released = release != null && !release.CheckLocked();
-
-                if (!touch && !locked) // Any attempt to step?
-                {
-                    StepInterrupt = false;
-                    return false;
-                }
-
-                StepInterrupt = true;
-
-                if (touch) // Initial contact
-                    step.ToggleLock(); // lock foot
-
-                if (locked && release != null) // Initial lock
-                    release.ToggleLock(false); // Release
-
-                if (StepInterrupt && released) // Initial release
-                    StepInterrupt = false;
-
-                return !StepInterrupt; // Still Stepping?
-            }
-            public void UnlockAllFeet()
-            {
-                ReleaseTimer = ReleaseCount;
-                LockedIndex = -1;
-                UnlockOtherFeet();
-            }
-            public void IncrementStepping(ClockMode mode)
-            {
-                IncrementStepping(mode != ClockMode.REV ? 1 : -1);
-            }
-            public void InitFootStatus()
-            {
-                NewLockCandidate();
-                UnlockOtherFeet();
-
-                foreach (Foot foot in Feet)
-                    foot.GearInit();
-            }
-
-            int StepIndex(bool forward)
-            {
-                int stepIndex = LockedIndex + (forward ? 1 : -1);
-                stepIndex = stepIndex < 0 ? Feet.Count - 1 : stepIndex >= Feet.Count ? 0 : stepIndex;
-                return stepIndex;
-            }
-            void UnlockOtherFeet()
-            {
-                Foot expected = GetFoot(LockedIndex);
-                foreach (Foot foot in Feet)
-                    if (foot != expected)
-                        foot.ToggleLock(false);
-            }
-            void IncrementStepping(int incr)
-            {
-                SetLockedIndex(LockedIndex + incr);
-            }
-            void SetLockedIndex(int step)
-            {
-                LockedIndex = step;
-                LockedIndex = LockedIndex < 0 ? Feet.Count - 1 : LockedIndex >= Feet.Count ? 0 : LockedIndex;
-            }
-            void NewLockCandidate()
-            {
-
-                //StreamDlog("New Lock Candidate...");
-                for (int i = 0; i < Feet.Count; i++)
-                {
-                    Foot check = GetFoot(i);
-                    if (check.CheckLocked() || check.CheckTouching())
-                    {
-                        check.ToggleLock(true);
-                        LockedIndex = i;
-                        Locked = true;
-
-                        if (CurrentWalk != null)
-                        {
-                            CurrentWalk.LoadKeyFrames(true, check.LockIndex);
-                            CurrentWalk.StepDelay = true;
-                        }
-
-
-                        return;
-                    }
-                }
-
-                Locked = false;
-                LockedIndex = -1;
-            }
-
-            public void SyncJoints()
-            {
-                foreach (Joint joint in Joints)
-                    joint.Sync();
-            }
-            public void ZeroJointSet(KeyFrame frame = null)
-            {
-                if (frame == null)
-                    foreach (Joint joint in Joints)
-                        joint.OverwriteAnimTarget(0);
-                else
-                    foreach (JointFrame jFrame in frame.Jframes)
-                        jFrame.Joint.OverwriteAnimTarget(jFrame.MySetting.MyValue());
-            }
-            public void SnapShotPlane()
-            {
-                if (Plane == null)
-                    return;
-
-                TargetPlane = Plane.WorldMatrix;
-                TurnPlane = Plane.WorldMatrix;
-            }
-            public void TogglePlaneing(bool toggle)
-            {
-                if (toggle && Locked)
-                    SnapShotPlane();
-
-                foreach (Foot foot in Feet)
-                    foot.UpdateFootPlaneing(toggle && Locked);
-            }
-            void UpdatePlaneBuffer(Vector3 playerInput)
-            {
-                playerInput *= PlaneScalar;
-
-                BufferPlane = MatrixD.CreateFromYawPitchRoll(playerInput.Y, playerInput.X, playerInput.Z);
-
-                TargetPlane = MatrixD.Multiply(BufferPlane, TargetPlane);
-
-                BufferPlane = MatrixD.Multiply(TargetPlane, MatrixD.Invert(Plane.WorldMatrix));
-
-                MatrixD.GetEulerAnglesXYZ(ref BufferPlane, out PlaneBuffer);
-            }
-            void UpdateTurnBuffer(double playerTurn)
-            {
-                TurnBuffer.Y = playerTurn * TurnScalar;
-            }
-            public bool UpdatePlanars()
-            {
-                if (Plane == null)
-                    return false;
-
-                UpdatePlaneBuffer(InputRotationBuffer);
-                UpdateTurnBuffer(InputTurnBuffer);
-
-                bool safety = false;
-                for (int i = 0; i < 3; i++)
-                    if (Math.Abs(PlaneBuffer.GetDim(i)) > SAFETY)
-                    {
-                        //TogglePlaneing(false);
-                        SnapShotPlane();
-                        //safety = true;
-                        break;
-                    }
-
-                foreach (Foot foot in Feet)
-                {
-                    if (foot != null)
-                    {
-                        //StreamDlog($"Updateing: {foot.Name}");
-                        foot.GenerateAxisMagnitudes(Plane.WorldMatrix);
-                        for (int i = 0; i < foot.Planars.Count; i++)
-                            if (foot.Planars[i] != null)
-                            {
-                                Joint plane = foot.GetPlanar(i);
-                                //StreamDlog($"Correcting: {plane.Name}\n" +
-                                //    $"Planeing: {plane.Planeing}");
-
-                                if (safety)
-                                {
-                                    //StreamDlog("Safety break");
-                                    plane.PlaneCorrection = 0;
-                                    continue;
-                                }
-
-                                if (plane.TAG == TurnTag && !foot.Locked)
-                                {
-                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, TurnBuffer);
-                                    DebugBinStream.Append($"PlaneCorrection Lifted {i}: {plane.PlaneCorrection}\n");
-                                }
-
-                                else
-                                {
-                                    //StreamDlog("Planeing");
-                                    plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, -PlaneBuffer);
-                                }
-                            }
-                    }
-                }
-                return true;
-            }
-            double GeneratePlaneCorrection(Joint joint, Vector3 planarRatios, Vector3 angleCorrections)
-            {
-                if (joint == null)
-                    return 0;
-
-                double output = 0;
-                for (int i = 0; i < 3; i++)
-                {
-                    double planarsum = joint.PlanarDots.GetDim(i) * planarRatios.GetDim(i) * (angleCorrections.GetDim(i) * RAD2DEG);
-
-                    /*
-                    
-                     1,0,0
-                     0,1,0
-                     0,0,-1
-
-                     */
-
-                    // x = + / y = + / z = -
-                    //output = i == 2 ? output - planarsum : output + planarsum;
-                    output += planarsum;
-                }
-                return output;
-            }
-        }
-        
-        class Foot : Root
-        {
-            public List<Root> Toes = new List<Root>();
-            public List<Root> Planars = new List<Root>();
-            public List<Root> Magnets = new List<Root>();
-
-            public int LockIndex;
-            public bool Locked = false;
-            public bool Planeing;
-            public Vector3 PlanarRatio;
-
-            public Foot(RootData data) : base(data)
-            {
-                TAG = FootTag;
-            }
-
-            public Foot(string input) : base()
-            {
-                StaticDlog("Foot Constructor:");
-                BUILT = Load(input);
-            }
-
-            public Joint GetToe(int index)
-            {
-                if (index < 0 || index >= Toes.Count)
-                    return null;
-                return (Joint)Toes[index];
-            }
-            public Joint GetPlanar(int index)
-            {
-                if (index < 0 || index >= Planars.Count)
-                    return null;
-                return (Joint)Planars[index];
-            }
-            public Magnet GetMagnet(int index)
-            {
-                if (index < 0 || index >= Magnets.Count)
-                    return null;
-                return (Magnet)Magnets[index];
-            }
-            public void GearInit()
-            {
-                foreach (Magnet magnet in Magnets)
-                    magnet.InitializeGear();
-            }
-            public void ToggleLock(bool locking = true)
-            {
-                foreach (Magnet magnet in Magnets)
-                    magnet.ToggleLock(locking);
-
-                Locked = locking;
-                ToggleGrip(locking);
-                ToggleForce(locking);
-                UpdateFootPlaneing(Planeing);
-            }
-            public bool CheckTouching()
-            {
-                bool result = false;
-                foreach (Magnet magnet in Magnets)
-                    if (magnet.IsAlive() && magnet.IsTouching())
-                    {
-                        result = true;
-                        break;
-                    }
-
-                //StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
-                return result;
-            }
-            public bool CheckLocked()
-            {
-                bool result = false;
-                foreach (Magnet gear in Magnets)
-                    if (gear.IsAlive() && gear.IsLocked())
-                    {
-                        result = true;
-                        break;
-                    }
-
-                //StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
-                return result;
-            }
-            void ToggleGrip(bool gripping = true)
-            {
-                foreach (Joint toe in Toes)
-                    toe.Gripping = gripping;
-            }
-            void ToggleForce(bool maxForce)
-            {
-                foreach (Joint planar in Planars)
-                    planar.SetForce(maxForce);
-            }
-            public void UpdateFootPlaneing(bool toggle)
-            {
-                Planeing = toggle;
-
-                foreach (Joint plane in Planars)
-                    if (plane != null)
-                    {
-                        plane.Planeing = (Locked || (plane.TAG == TurnTag && Strafing.MyState())) && Planeing;
-                    }
-            }
-            public void GenerateAxisMagnitudes(MatrixD plane)
-            {
-                PlanarRatio = Vector3.Zero;
-
-                for (int i = 0; i < Planars.Count; i++)
-                {
-                    if (Planars[i] == null)
-                        continue;
-
-                    GetPlanar(i).UpdatePlanarDot(plane);
-                    for (int j = 0; j < 3; j++)
-                    {
-                        PlanarRatio.SetDim(j, PlanarRatio.GetDim(j) + Math.Abs(GetPlanar(i).PlanarDots.GetDim(j)));
-                    }
-                }
-
-                for (int i = 0; i < 3; i++)
-                    PlanarRatio.SetDim(i, 1 / PlanarRatio.GetDim(i));
-            }
-
-            protected override bool Load(string[] data)
-            {
-                if (!base.Load(data))
-                    return false;
-
-                try { LockIndex = int.Parse(data[(int)PARAM.lIX]); }
-                catch { LockIndex = -1; }
-                return true;
-            }
-
-            protected override void saveData(string[] buffer)
-            {
-                buffer[(int)PARAM.lIX] = LockIndex.ToString();
-            }
-        }
         class Animation : Root
         {
             public Setting MySetting;
@@ -2589,6 +2594,7 @@ namespace IngameScript
             }
             protected override void saveData(string[] buffer)
             {
+                base.saveData(buffer);
                 buffer[(int)PARAM.SettingInit] = (MySetting == null ? 0 : MySetting.MyValue()).ToString();
             }
         }
@@ -3269,7 +3275,7 @@ namespace IngameScript
                     InputRotationBuffer.Y = -MECH_IX_BUFFER[(int)MechIx.YAW];
                     InputRotationBuffer.Z = -MECH_IX_BUFFER[(int)MechIx.ROLL];
                     InputTurnBuffer = -MECH_IX_BUFFER[(int)MechIx.MOVE_X];
-                    MoveBuffer = -(int)MECH_IX_BUFFER[(int)MechIx.MOVE_Z];
+                    MoveBuffer = (int)MECH_IX_BUFFER[(int)MechIx.MOVE_Z];
 
                     DebugBinStream.Append("Buffering Complete!\n");
                 }
@@ -4085,13 +4091,16 @@ namespace IngameScript
                     AppendMagnet(SetBuffer, newMagnet);
                 }
 
-                if (BlockBuffer[i] is IMyPistonBase ||
-                    BlockBuffer[i] is IMyMotorStator)
+                if (BlockBuffer[i] is IMyMechanicalConnectionBlock)
+                //if (BlockBuffer[i] is IMyPistonBase ||
+                //    BlockBuffer[i] is IMyMotorStator)
                 {
                     Joint newJoint = LoadJoint((IMyMechanicalConnectionBlock)BlockBuffer[i]);
                     AppendJoint(SetBuffer, newJoint);
                 }
             }
+
+            /*>>>*///Initialized = false;
 
             SetBuffered = false;
             return true;
@@ -4141,7 +4150,13 @@ namespace IngameScript
             }
 
             if (loadedJoint != null)
+            {
                 JointBin.Add(loadedJoint);
+                Static($"TAG:           {loadedJoint.TAG}\n" +
+                        $"Name:         {loadedJoint.Name}\n" +
+                        $"MyIndex:      {loadedJoint.MyIndex}\n" +
+                        $"ParentIndex:  {loadedJoint.ParentIndex}");
+            }
 
             return loadedJoint;
         }
