@@ -1,25 +1,27 @@
-﻿using EmptyKeys.UserInterface.Generated.EditFactionIconView_Bindings;
-using Sandbox.Game.Debugging;
+﻿//using EmptyKeys.UserInterface.Generated.EditFactionIconView_Bindings;
+//using Sandbox.Game.Debugging;
+//using Sandbox.Game.GUI;
+//using Sandbox.Game.Entities.Cube;
+//using System.ComponentModel;
+//using System.Diagnostics.Contracts;
+//using System.IO;
+//using System.Reflection;
+//using System.Reflection.Emit;
+//using System.Runtime.CompilerServices;
+//using System.Security.Cryptography;
+//using VRage.Game.ObjectBuilders.VisualScripting;
+//using VRage.Sync;
+
+
 using Sandbox.Game.EntityComponents;
-using Sandbox.Game.GUI;
 using Sandbox.ModAPI.Ingame;
 using Sandbox.ModAPI.Interfaces;
-
-//using Sandbox.Game.Entities.Cube;
-
 using SpaceEngineers.Game.ModAPI.Ingame;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.ComponentModel;
-using System.Diagnostics.Contracts;
-using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using System.Text;
 using VRage;
 using VRage.Collections;
@@ -29,8 +31,6 @@ using VRage.Game.GUI.TextPanel;
 using VRage.Game.ModAPI.Ingame;
 using VRage.Game.ModAPI.Ingame.Utilities;
 using VRage.Game.ObjectBuilders.Definitions;
-using VRage.Game.ObjectBuilders.VisualScripting;
-using VRage.Sync;
 using VRageMath;
 
 namespace IngameScript
@@ -154,7 +154,7 @@ namespace IngameScript
 
         static UpdateFrequency DEF_FREQ = UpdateFrequency.Update1;
         static RootSort SORT = new RootSort();
-        static Program PROG = null;
+        static Program PROG;
 
         const string VersionNumber = "0.6.1";
 
@@ -261,8 +261,8 @@ namespace IngameScript
             {GUIMode.EDIT, Library      },
             {GUIMode.CREATE, Library    },
 
-            {GUIMode.ASSIGN_JOINTS, Assignment },
-            {GUIMode.ASSIGN_MAGNETS, Assignment },
+            {GUIMode.ASSIGN, Assignment },
+            //{GUIMode.ASSIGN_MAGNETS, Assignment },
 
             {GUIMode.PILOT, Controls    },
             {GUIMode.OPTIONS, OptionMenu},
@@ -389,13 +389,12 @@ namespace IngameScript
             GroupName = 4,
             GripDirection = 5,
         }
-
-        public enum GUIMode
+        enum GUIMode
         {
             MAIN,
             INFO,
-            ASSIGN_JOINTS,
-            ASSIGN_MAGNETS,
+            ASSIGN,
+            //ASSIGN_MAGNETS,
             CREATE,
             EDIT,
             PILOT,
@@ -1703,13 +1702,13 @@ namespace IngameScript
                 Buttons = new Dictionary<GUIKey, Button>
                 {
                     {GUIKey.ALPHA_1,    new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
-                    {GUIKey.ALT_1,      new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
+                    //{GUIKey.ALT_1,      new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
 
-                    {GUIKey.ALPHA_2,    new Button("Assign Magnets",    ()=> SetGuiMode(GUIMode.ASSIGN_MAGNETS)) },
-                    {GUIKey.ALT_2,      new Button("Assign Joints",     ()=> SetGuiMode(GUIMode.ASSIGN_JOINTS)) },
+                    //{GUIKey.ALPHA_2,    new Button("Assign Magnets",    ()=> SetGuiMode(GUIMode.ASSIGN_MAGNETS)) },
+                    //{GUIKey.ALT_2,      new Button("Assign Joints",     ()=> SetGuiMode(GUIMode.ASSIGN)) },
 
                     {GUIKey.ALPHA_3,    new Button("Aquire All Joints", ()=> FindAndAssignAllJoints()) },
-                    {GUIKey.ALT_3,      new Button("Aquire All Magnets",()=> FindAndAssignAllJoints()) },
+                    //{GUIKey.ALT_3,      new Button("Aquire All Magnets",()=> FindAndAssignAllJoints()) },
 
                     {GUIKey.ALPHA_3,    new Button("Add foot",          ()=> TableJsetAdjust(0,1))     },
                     {GUIKey.ALPHA_4,    new Button("Remove foot",       ()=> TableJsetAdjust(0,-1))    },
@@ -1829,25 +1828,25 @@ namespace IngameScript
 
                 AdjustJointParam(JointBin[SelectedIndex(eRoot.JOINT)] as Joint, (PARAM)SelectedIndex(eRoot.PARAM), deltaValue);
             }
-            public override void SetMode(GUIMode mode)
-            {
-                switch(mode)
-                {
-                    case GUIMode.ASSIGN_JOINTS:
-                        Name = "Assign Joints";
-                        AlternateMode = false;
-                        break;
-
-                    case GUIMode.ASSIGN_MAGNETS:
-                        Name = "Assign Magnets";
-                        AlternateMode = true;
-                        break;
-
-                    default:
-                        Name = "Assignment Table";
-                        break;
-                }
-            }
+            //public override void SetMode(GUIMode mode)
+            //{
+            //    switch(mode)
+            //    {
+            //        case GUIMode.ASSIGN:
+            //            Name = "Assign Joints";
+            //            AlternateMode = false;
+            //            break;
+            //
+            //        case GUIMode.ASSIGN_MAGNETS:
+            //            Name = "Assign Magnets";
+            //            AlternateMode = true;
+            //            break;
+            //
+            //        default:
+            //            Name = "Assignment Table";
+            //            break;
+            //    }
+            //}
             void AdjustJointParam(Joint joint, PARAM targetParam, int deltaValue)
             {
                 switch(targetParam)
@@ -1947,7 +1946,7 @@ namespace IngameScript
                     {GUIKey.ALPHA_2, new Button("Information",      ()=> SetGuiMode( GUIMode.INFO   ))  },
                     {GUIKey.ALPHA_3, new Button("Library",          ()=> SetGuiMode( GUIMode.CREATE ))  },
                     {GUIKey.ALPHA_4, new Button("Options",          ()=> SetGuiMode( GUIMode.OPTIONS))  },
-                    {GUIKey.ALPHA_5, new Button("Assignment",       ()=> SetGuiMode( GUIMode.ASSIGN_JOINTS ))  },
+                    {GUIKey.ALPHA_5, new Button("Assignment",       ()=> SetGuiMode( GUIMode.ASSIGN ))  },
                     {GUIKey.ALPHA_6, new Button("Save CustomData",  ()=> WriteCustomData())             },
                     {GUIKey.ALPHA_7, new Button("Save ActiveData",  ()=> SavingData = true)             },
                     {GUIKey.ALPHA_8, new Button("Reload ActiveData",()=> LoadingData = true)            },
@@ -3668,9 +3667,44 @@ namespace IngameScript
         #endregion
 
         #region ENTRY POINTS
+        void ProgInit()
+        {
+            Echo("Init");
+            Echo($"this: {this}");
+            Echo($"PROG: {PROG == null}");
+            PROG = this;
+
+            try
+            {
+                Echo("Step\n");
+                AssignFlightGroup(); Echo("Step\n");
+                SetupController(); Echo("Step\n");
+                SetupDroneControl(); Echo("Step\n");
+                SetupScreens(); Echo("Step\n");
+                SetupOptions(); Echo("Step\n");
+
+                DesignatedPlane = GridTerminalSystem.GetBlockWithName(PlaneCustomName); Echo("Step\n");
+                DesignatedPlane = DesignatedPlane == null ? CockPit : DesignatedPlane; Echo("Step\n");
+                //PROG_FREQ = DEF_FREQ; Echo("Step\n");
+                //Runtime.UpdateFrequency = PROG_FREQ; Echo("Step\n");
+                Initialized = true; Echo("Step\n");
+            }
+            catch
+            {
+                Initialized = false;
+                return;
+            }
+
+            SetGuiMode(GUIMode.MAIN);
+            GUIUpdate();
+        }
         public Program()
         {
-            
+            Echo("Start");
+            return;
+            //PROG_FREQ = DEF_FREQ; Echo("Step\n");
+            //Runtime.UpdateFrequency = UpdateFrequency.Update1;//PROG_FREQ; Echo("Step\n");
+            //return;
             Echo($"this: {this}");
             Echo($"PROG: {PROG == null}");
             PROG = this;
@@ -3704,7 +3738,11 @@ namespace IngameScript
             Echo($"Initialized: {Initialized}");
 
             if (!Initialized)
+            {
+                ProgInit();
                 return;
+            }
+                
             
                 
 

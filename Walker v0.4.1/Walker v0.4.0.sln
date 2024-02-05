@@ -11,6 +11,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MechPeripheralTesting", "..
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Walker_WORKING", "..\Walker_WORKING\Walker_WORKING.csproj", "{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WalkerRebuild", "..\WalkerRebuild\WalkerRebuild.csproj", "{8299770C-B3EE-44EF-8FF2-3DC09FA4C4E2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fixer", "..\Fixer\Fixer.csproj", "{19BC9F36-4B95-4141-AE75-E1B266ABAA84}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -24,6 +28,10 @@ Global
 		{ABC19259-FFC4-41EB-B319-4E9A8907A031}.Debug|x64.Build.0 = Debug|x64
 		{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}.Debug|x64.ActiveCfg = Debug|x64
 		{45894FCE-0811-49A9-9D05-6EBBD00C3CF2}.Debug|x64.Build.0 = Debug|x64
+		{8299770C-B3EE-44EF-8FF2-3DC09FA4C4E2}.Debug|x64.ActiveCfg = Debug|x64
+		{8299770C-B3EE-44EF-8FF2-3DC09FA4C4E2}.Debug|x64.Build.0 = Debug|x64
+		{19BC9F36-4B95-4141-AE75-E1B266ABAA84}.Debug|x64.ActiveCfg = Debug|x64
+		{19BC9F36-4B95-4141-AE75-E1B266ABAA84}.Debug|x64.Build.0 = Debug|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
