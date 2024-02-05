@@ -36,6 +36,7 @@ using VRageMath;
 namespace IngameScript
 {
 
+
     #region TODO
     /* Emergency override? (Threshold, Reaction Protocol) || FIXED
      * Adjustable rotor limits? (Max_Speed, Max_Accel) || BUILT
@@ -150,7 +151,10 @@ namespace IngameScript
         static bool Snapping = true;
         ////////////////////
 
+
         static UpdateFrequency DEF_FREQ = UpdateFrequency.Update1;
+        static RootSort SORT = new RootSort();
+        static Program PROG = null;
 
         const string VersionNumber = "0.6.1";
 
@@ -207,6 +211,7 @@ namespace IngameScript
 
         static List<IMyFunctionalBlock> FlightGroup = new List<IMyFunctionalBlock>();
         static List<Root> JointBin = new List<Root>();
+        static List<Magnet> MagnetBin = new List<Magnet>();
         static List<Root> JsetBin = new List<Root>();
 
         #endregion
@@ -256,9 +261,11 @@ namespace IngameScript
             {GUIMode.EDIT, Library      },
             {GUIMode.CREATE, Library    },
 
+            {GUIMode.ASSIGN_JOINTS, Assignment },
+            {GUIMode.ASSIGN_MAGNETS, Assignment },
+
             {GUIMode.PILOT, Controls    },
             {GUIMode.OPTIONS, OptionMenu},
-            {GUIMode.ASSIGN, Assignment },
         };
 
         #endregion
@@ -296,14 +303,13 @@ namespace IngameScript
         #region RUNTIME
 
         static IMyCockpit CockPit;
-        static RootSort SORT = new RootSort();
-        static Program PROG;
+        
 
         static Sequence CurrentWalk;
         static JointSet CurrentWalkSet;
         static List<Sequence> Animations = new List<Sequence>();
         static UpdateFrequency PROG_FREQ;
-        GUIMode _CurrentGUIMode;
+        static GUIMode CurrentGUIMode;
         static Vector3D InputRotationBuffer;
         static double InputTurnBuffer = 0;
 
@@ -384,11 +390,12 @@ namespace IngameScript
             GripDirection = 5,
         }
 
-        enum GUIMode
+        public enum GUIMode
         {
             MAIN,
             INFO,
-            ASSIGN,
+            ASSIGN_JOINTS,
+            ASSIGN_MAGNETS,
             CREATE,
             EDIT,
             PILOT,
@@ -572,8 +579,6 @@ namespace IngameScript
                 float delta = Incrementer == null ? defaultIncr : Incrementer.Value;
                 Value += incr ? delta : -delta;
                 Clamp();
-                //if (OptionUpdate != null)
-                //OptionUpdate(Value);
             }
 
             public float MyValue()
@@ -631,12 +636,12 @@ namespace IngameScript
                 DebugBinStream.Append($"{input}{(newLine ? "\n" : "")}");
             }
 
-            protected bool Load(string input)//, Option option = null)
+            protected bool Load(string input)
             {
                 StaticDlog($"Load Root String: {input}");
-                return Load(input.Split(':'));//, option);
+                return Load(input.Split(':'));
             }
-            protected virtual bool Load(string[] data)//, Option option = null)
+            protected virtual bool Load(string[] data)
             {
                 StaticDlog("Root Load:");
                 try
@@ -736,9 +741,7 @@ namespace IngameScript
 
             public void GenerateZeroFrame()
             {
-                //PROG.LibraryBuilder.Add("Generating Zero Frame!");
                 ZeroFrame = NewKeyFrame(ParentData("Zero Frame"), this);
-                //PROG.LibraryBuilder.Add("Generated!");
             }
 
             public Foot GetFoot(int index)
@@ -913,8 +916,6 @@ namespace IngameScript
             }
             void NewLockCandidate()
             {
-
-                //StreamDlog("New Lock Candidate...");
                 for (int i = 0; i < Feet.Count; i++)
                 {
                     Foot check = GetFoot(i);
@@ -997,9 +998,7 @@ namespace IngameScript
                 for (int i = 0; i < 3; i++)
                     if (Math.Abs(PlaneBuffer.GetDim(i)) > SAFETY)
                     {
-                        //TogglePlaneing(false);
                         SnapShotPlane();
-                        //safety = true;
                         break;
                     }
 
@@ -1007,18 +1006,14 @@ namespace IngameScript
                 {
                     if (foot != null)
                     {
-                        //StreamDlog($"Updateing: {foot.Name}");
                         foot.GenerateAxisMagnitudes(Plane.WorldMatrix);
                         for (int i = 0; i < foot.Planars.Count; i++)
                             if (foot.Planars[i] != null)
                             {
                                 Joint plane = foot.GetPlanar(i);
-                                //StreamDlog($"Correcting: {plane.Name}\n" +
-                                //    $"Planeing: {plane.Planeing}");
 
                                 if (safety)
                                 {
-                                    //StreamDlog("Safety break");
                                     plane.PlaneCorrection = 0;
                                     continue;
                                 }
@@ -1031,7 +1026,6 @@ namespace IngameScript
 
                                 else
                                 {
-                                    //StreamDlog("Planeing");
                                     plane.PlaneCorrection = GeneratePlaneCorrection(plane, foot.PlanarRatio, -PlaneBuffer);
                                 }
                             }
@@ -1129,7 +1123,6 @@ namespace IngameScript
                         break;
                     }
 
-                //StreamDlog($"Foot {MyIndex} Is Touching?: {result}");
                 return result;
             }
             public bool CheckLocked()
@@ -1142,7 +1135,6 @@ namespace IngameScript
                         break;
                     }
 
-                //StreamDlog($"Foot {MyIndex} Is Locked?: {result}");
                 return result;
             }
             void ToggleGrip(bool gripping = true)
@@ -1392,16 +1384,9 @@ namespace IngameScript
                 int layer = (int)CurrentDirectoryLayer;
                 layer += up ? -1 : 1;
                 layer = layer < (int)eRoot.JSET ? (int)eRoot.J_FRAME : layer > (int)eRoot.J_FRAME ? (int)eRoot.JSET : layer;
-                //layer += EditorToggle ? up ? 3 : -3 : up ? 1 : -1;
-                //layer = layer > 3 ? 0 : layer < 0 ? 3 : layer;
-                //
-                //if (up)
-                //    layer += ((int)CurrentDirectoryLayer == 3) ? 0 : 1;
-                //else
-                //    layer -= ((int)CurrentDirectoryLayer == 0) ? 0 : 1;
+
                 CurrentDirectoryLayer = (eRoot)layer;
                 LibraryUpdate();
-                //LibrarySelection(up ? -1 : 1);
             }
             void DemoSelectedFrame()
             {
@@ -1441,7 +1426,6 @@ namespace IngameScript
                 if (name == null)
                     return;
 
-                //PROG.LibraryBuilder.Add("Inserting set...");
 
                 int index = SelectedIndex(0);
                 index += add ? 1 : 0;
@@ -1455,7 +1439,6 @@ namespace IngameScript
                 JsetBin.Insert(index, NewJointSet(name, index));
                 ReIndexSets();
 
-                //PROG.LibraryBuilder.Add("Inserted!");
             }
             void ReIndexSets()
             {
@@ -1720,20 +1703,27 @@ namespace IngameScript
                 Buttons = new Dictionary<GUIKey, Button>
                 {
                     {GUIKey.ALPHA_1,    new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
-                    {GUIKey.ALPHA_2,    new Button("Aquire All Joints", ()=> FindAndAssignAllJoints()) },
+                    {GUIKey.ALT_1,      new Button("Main",              ()=> SetGuiMode(GUIMode.MAIN)) },
+
+                    {GUIKey.ALPHA_2,    new Button("Assign Magnets",    ()=> SetGuiMode(GUIMode.ASSIGN_MAGNETS)) },
+                    {GUIKey.ALT_2,      new Button("Assign Joints",     ()=> SetGuiMode(GUIMode.ASSIGN_JOINTS)) },
+
+                    {GUIKey.ALPHA_3,    new Button("Aquire All Joints", ()=> FindAndAssignAllJoints()) },
+                    {GUIKey.ALT_3,      new Button("Aquire All Magnets",()=> FindAndAssignAllJoints()) },
 
                     {GUIKey.ALPHA_3,    new Button("Add foot",          ()=> TableJsetAdjust(0,1))     },
                     {GUIKey.ALPHA_4,    new Button("Remove foot",       ()=> TableJsetAdjust(0,-1))    },
-                    {GUIKey.ALT_LEFT,   new Button("Previous JointSet", ()=> TableJsetAdjust(-1, 0))   },
-                    {GUIKey.ALT_RIGHT,  new Button("Next JointSet",     ()=> TableJsetAdjust(1, 0))    },
+
+                    {GUIKey.ALT_LEFT,   new Button("Increase Value",    ()=> TableShift(0,0,1))        },
+                    {GUIKey.ALT_RIGHT,  new Button("Decrease Value",    ()=> TableShift(0,0,-1))       },
 
                     {GUIKey.FORWARD,    new Button("Shift Up",          ()=> TableShift(0, -1, 0))     },
                     {GUIKey.BACKWARD,   new Button("Shift Down",        ()=> TableShift(0, 1, 0))      },
                     {GUIKey.LEFT,       new Button("Shift Left",        ()=> TableShift(-1, 0, 0))     },
                     {GUIKey.RIGHT,      new Button("Shift Right",       ()=> TableShift(1, 0, 0))      },
 
-                    {GUIKey.UP,         new Button("Increase Value",    ()=> TableShift(0,0,1))        },
-                    {GUIKey.DOWN,       new Button("Decrease Value",    ()=> TableShift(0,0,-1))       }
+                    {GUIKey.UP,         new Button("Previous JointSet", ()=> TableJsetAdjust(-1, 0))   },
+                    {GUIKey.DOWN,       new Button("Next JointSet",     ()=> TableJsetAdjust(1, 0))    },
                 };
                 SelectedIndexes = new Dictionary<eRoot, int>
                 {
@@ -1746,24 +1736,18 @@ namespace IngameScript
             protected override string[] PageBuilder()
             {
                 cursorCounter = 0;
+                DisplayManagerBuilder.Clear();
                 RawBuffer.Clear();
+
                 RawBuffer.Add("= Assignment =");
                 RawBuffer.Add($"[Selected JSET:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Name}][FootCount:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Feet.Count}]=");
 
-                HeaderSize = 2;
-
-                DisplayManagerBuilder.Clear();
-
-                
-
                 for (int i = (int)PARAM.uIX; i < ParamCount; i++)
-                {
-                    
                     DisplayManagerBuilder.Append($"[{(PARAM)i}]");
-                }
-                    
-
+               
                 DisplayManagerBuilder.Append("[Name]");
+
+                HeaderSize = 3;
 
                 RawBuffer.Add(DisplayManagerBuilder.ToString());
 
@@ -1772,7 +1756,7 @@ namespace IngameScript
 
                 return RawBuffer.ToArray();
             }
-            const int PadSize = 3;
+            const int PadSize = 2;
             string Pad(int i)
             {
                 string output = i.ToString();
@@ -1795,7 +1779,7 @@ namespace IngameScript
                 cursorCounter++;
 
                 DisplayManagerBuilder.Append(BuildCursor(selected));
-                DisplayManagerBuilder.Append($"{index}");
+                DisplayManagerBuilder.Append($"{Pad(index)}");
                 int[] indexes = joint.Indexes();
                 int selectedParam = SelectedIndex(eRoot.PARAM);
                 int selectedJoint = SelectedIndex(eRoot.JOINT);
@@ -1822,11 +1806,10 @@ namespace IngameScript
 
                 foreach (IMyMechanicalConnectionBlock joint in ReTagBuffer)
                 {
-                    Joint freshJoint = NewJoint(joint, JointData.Default);
+                    Joint freshJoint = NewJoint(JointData.Default, joint);
                     int oldIndex = JointBin.FindIndex(x => x.MyIndex == freshJoint.MyIndex);
+
                     if (freshJoint.MyIndex < 0 || oldIndex < 0)
-                        //JointBin[oldIndex] = freshJoint;
-                    //else
                         JointBin.Add(freshJoint);
                 }
             }
@@ -1846,7 +1829,25 @@ namespace IngameScript
 
                 AdjustJointParam(JointBin[SelectedIndex(eRoot.JOINT)] as Joint, (PARAM)SelectedIndex(eRoot.PARAM), deltaValue);
             }
+            public override void SetMode(GUIMode mode)
+            {
+                switch(mode)
+                {
+                    case GUIMode.ASSIGN_JOINTS:
+                        Name = "Assign Joints";
+                        AlternateMode = false;
+                        break;
 
+                    case GUIMode.ASSIGN_MAGNETS:
+                        Name = "Assign Magnets";
+                        AlternateMode = true;
+                        break;
+
+                    default:
+                        Name = "Assignment Table";
+                        break;
+                }
+            }
             void AdjustJointParam(Joint joint, PARAM targetParam, int deltaValue)
             {
                 switch(targetParam)
@@ -1946,7 +1947,7 @@ namespace IngameScript
                     {GUIKey.ALPHA_2, new Button("Information",      ()=> SetGuiMode( GUIMode.INFO   ))  },
                     {GUIKey.ALPHA_3, new Button("Library",          ()=> SetGuiMode( GUIMode.CREATE ))  },
                     {GUIKey.ALPHA_4, new Button("Options",          ()=> SetGuiMode( GUIMode.OPTIONS))  },
-                    {GUIKey.ALPHA_5, new Button("Assignment",       ()=> SetGuiMode( GUIMode.ASSIGN ))  },
+                    {GUIKey.ALPHA_5, new Button("Assignment",       ()=> SetGuiMode( GUIMode.ASSIGN_JOINTS ))  },
                     {GUIKey.ALPHA_6, new Button("Save CustomData",  ()=> WriteCustomData())             },
                     {GUIKey.ALPHA_7, new Button("Save ActiveData",  ()=> SavingData = true)             },
                     {GUIKey.ALPHA_8, new Button("Reload ActiveData",()=> LoadingData = true)            },
@@ -1988,7 +1989,6 @@ namespace IngameScript
 
                 string[] output = input.Split('\n');
                 RawBuffer = output.ToList();
-                //LineBufferSize = output.Length;
                 return output;
             }
         }
@@ -2333,7 +2333,6 @@ namespace IngameScript
             public virtual float TorqueMax()
             {
                 return 0;
-                //return Connection.GetMaximum<float>("Torque");
             }
             public virtual Vector3 ReturnRotationAxis()
             {
@@ -2438,11 +2437,6 @@ namespace IngameScript
 
                 base.UpdateCorrectionDisplacement();
             }
-            //public override void UpdatePlaneDisplacement()
-            //{
-            //    
-            //}
-
         }
         class Rotor : Joint
         {
@@ -2482,20 +2476,16 @@ namespace IngameScript
             }
             public override void LerpAnimationFrame(float lerpTime)
             {
-                //base.LerpAnimationFrame(lerpTime);
-
                 double mag = Math.Abs(LerpPoints[0] - LerpPoints[1]);
                 int dir = (mag > 180) ? Math.Sign(LerpPoints[0] - LerpPoints[1]) : Math.Sign(LerpPoints[1] - LerpPoints[0]);
 
                 mag = mag > 180 ? 360 - mag : mag;
                 mag *= (lerpTime * dir);
 
-                //mag = mag > 180 ? 360 - mag : -mag;
-                //mag *= lerpTime;
 
                 AnimTarget = LerpPoints[0] + mag;
                 AnimTarget = (AnimTarget > 360) ? AnimTarget - 360 : AnimTarget;
-                //AnimTarget %= 360;
+
                 AnimTarget = (AnimTarget < 0) ? AnimTarget + 360 : AnimTarget;
             }
             public override void UpdateCorrectionDisplacement()
@@ -2551,8 +2541,6 @@ namespace IngameScript
             }
             public override void LerpAnimationFrame(float lerpTime)
             {
-                //base.LerpAnimationFrame(lerpTime);
-
                 AnimTarget = LerpPoints[0] + ((LerpPoints[1] - LerpPoints[0]) * lerpTime);
             }
             public override void UpdateCorrectionDisplacement()
@@ -2587,7 +2575,7 @@ namespace IngameScript
                 BUILT = Load(gear == null ? null : gear.CustomData);
             }
 
-            protected override bool Load(string[] data)//, Option option = null)
+            protected override bool Load(string[] data)
             {
                 if (!base.Load(data))
                     return false;
@@ -2660,7 +2648,7 @@ namespace IngameScript
             {
 
             }
-            protected override bool Load(string[] data)//, Option option = null)
+            protected override bool Load(string[] data)
             {
                 if (!base.Load(data))
                     return false;
@@ -2756,9 +2744,6 @@ namespace IngameScript
             }
             public override void ReIndex()
             {
-                //for (int i = 0; i < Jframes.Count; i++)
-                //    Jframes[i].MyIndex = i;
-
                 Jframes.Sort(MySort);
             }
             public override void GenerateSetting(float init)
@@ -2832,9 +2817,6 @@ namespace IngameScript
             }
             public override void ReIndex()
             {
-                //for (int i = 0; i < Frames.Count; i++)
-                //    Frames[i].MyIndex = i;
-
                 Frames.Sort(MySort);
             }
             public override void GenerateSetting(float init)
@@ -3103,17 +3085,8 @@ namespace IngameScript
                 $"F:{matrix.Forward.X.ToString(digits)}|{matrix.Forward.Y.ToString(digits)}|{matrix.Forward.Z.ToString(digits)}\n" +
                 $"T:{matrix.Translation.X.ToString(digits)}|{matrix.Translation.Y.ToString(digits)}|{matrix.Translation.Z.ToString(digits)}\n";
         }
-        static string BuildCursor(bool selected)//, int count)
+        static string BuildCursor(bool selected)
         {
-            //int cursor;
-            //if (selected)
-            //{
-            //    CursorIndex = count - 1;
-            //    cursor = 1;
-            //}
-            //else
-            //    cursor = 0;
-
             return $"{Cursor[selected ? 1 : 0]}";
         }
         static void LineWrapper(List<string> buffer, string[] words, int charMax)
@@ -3142,8 +3115,8 @@ namespace IngameScript
         #region GUI INPUT
         static void SetGuiMode(GUIMode mode)
         {
-            PROG._CurrentGUIMode = mode;
-            Pages[PROG._CurrentGUIMode].SetMode(mode);
+            CurrentGUIMode = mode;
+            Pages[CurrentGUIMode].SetMode(mode);
             if (CockPit != null)
             {
                 CockPit.ControlThrusters = mode == GUIMode.PILOT;
@@ -3377,30 +3350,6 @@ namespace IngameScript
                     CurrentWalk.SetClockMode((ClockMode)MoveBuffer);
                 }
 
-                /*switch (MoveBuffer) //Walking
-                {
-                    case 1:
-                        if (LastMechWalkInput == -1)
-                            break;
-                        LastMechWalkInput = -1;
-                        CurrentWalk.SetClockMode(ClockMode.REV);
-                        break;
-
-                    case 0:
-                        if (LastMechWalkInput == 0)
-                            break;
-                        LastMechWalkInput = 0;
-                        CurrentWalk.SetClockMode(ClockMode.PAUSE);
-                        break;
-
-                    case -1:
-                        if (LastMechWalkInput == 1)
-                            break;
-                        LastMechWalkInput = 1;
-                        CurrentWalk.SetClockMode(ClockMode.FOR);
-                        break;
-                }*/
-
                 DebugBinStream.Append("Walk input digested\n");
             }
             else
@@ -3495,8 +3444,7 @@ namespace IngameScript
         }
         void FeetManager()
         {
-            if (//!StatorControl.MyState() ||
-                IgnoreFeet.MyState() ||
+            if (IgnoreFeet.MyState() ||
                 CurrentWalkSet == null)
                 return;
 
@@ -3716,26 +3664,31 @@ namespace IngameScript
         {
             DroneEar = IGC.RegisterBroadcastListener(DroneChannel);
         }
+
         #endregion
 
         #region ENTRY POINTS
         public Program()
         {
+            
+            Echo($"this: {this}");
+            Echo($"PROG: {PROG == null}");
             PROG = this;
 
             try
             {
-                AssignFlightGroup();
-                SetupController();
-                SetupDroneControl();
-                SetupScreens();
-                SetupOptions();
+                Echo("Step\n");
+                AssignFlightGroup(); Echo("Step\n");
+                SetupController(); Echo("Step\n");
+                SetupDroneControl(); Echo("Step\n");
+                SetupScreens(); Echo("Step\n");
+                SetupOptions(); Echo("Step\n");
 
-                DesignatedPlane = GridTerminalSystem.GetBlockWithName(PlaneCustomName);
-                DesignatedPlane = DesignatedPlane == null ? CockPit : DesignatedPlane;
-                PROG_FREQ = DEF_FREQ;
-                Runtime.UpdateFrequency = PROG_FREQ;
-                Initialized = true;
+                DesignatedPlane = GridTerminalSystem.GetBlockWithName(PlaneCustomName); Echo("Step\n");
+                DesignatedPlane = DesignatedPlane == null ? CockPit : DesignatedPlane; Echo("Step\n");
+                PROG_FREQ = DEF_FREQ; Echo("Step\n");
+                Runtime.UpdateFrequency = PROG_FREQ; Echo("Step\n");
+                Initialized = true; Echo("Step\n");
             }
             catch
             {
@@ -3752,6 +3705,8 @@ namespace IngameScript
 
             if (!Initialized)
                 return;
+            
+                
 
             TransferCount = 0;
 
@@ -3868,7 +3823,7 @@ namespace IngameScript
 
                         jData.GripDirection = toe ? Math.Sign(footBuffer[b].GetValueFloat("Velocity")) : 0;
 
-                        Joint newJoint = NewJoint((IMyMechanicalConnectionBlock)footBuffer[b], jData);
+                        Joint newJoint = NewJoint(jData, (IMyMechanicalConnectionBlock)footBuffer[b]);
                         AppendJoint(newSet, newJoint);
 
                         if (toe)
@@ -3881,7 +3836,7 @@ namespace IngameScript
                         jRoot.MyIndex = newFoot.Magnets.Count;
                         jRoot.Name = "[MAGNET]";
 
-                        Magnet newMagnet = new Magnet(jRoot, (IMyLandingGear)footBuffer[b], f); //NewMagnet((IMyLandingGear)footBuffer[b], jRoot, f);
+                        Magnet newMagnet = NewMagnet(jRoot, (IMyLandingGear)footBuffer[b], f);
                         AppendMagnet(newSet, newMagnet);
                     }
                 }
@@ -3901,12 +3856,12 @@ namespace IngameScript
                     Static($"GenericTag: {jData.TAG}\n");
 
                     jointIndex++;
-                    newSet.Joints.Add(NewJoint((IMyMechanicalConnectionBlock)joints[j], jData));
+                    newSet.Joints.Add(NewJoint(jData, (IMyMechanicalConnectionBlock)joints[j]));
                 }
             }
             return newSet;
         }
-        static Joint NewJoint(IMyMechanicalConnectionBlock jointBlock, JointData data)
+        static Joint NewJoint(JointData data, IMyMechanicalConnectionBlock jointBlock)
         {
             Joint newJoint = null;
 
@@ -3940,6 +3895,12 @@ namespace IngameScript
             }
 
             return newKFrame;
+        }
+        static Magnet NewMagnet(RootData root, IMyLandingGear gear, int footIndex)
+        {
+            Magnet newMagnet = new Magnet(root, gear, footIndex);
+            MagnetBin.Add(newMagnet);
+            return newMagnet;
         }
         static void AppendMagnet(JointSet set, Magnet magnet)
         {
@@ -4227,17 +4188,12 @@ namespace IngameScript
             }
 
             if (loadedJoint != null)
-            {
                 JointBin.Add(loadedJoint);
-                Static($"TAG:           {loadedJoint.TAG}\n" +
-                        $"Name:         {loadedJoint.Name}\n" +
-                        $"MyIndex:      {loadedJoint.MyIndex}\n" +
-                        $"ParentIndex:  {loadedJoint.ParentIndex}");
-            }
+            
 
             return loadedJoint;
         }
-        Magnet LoadMagnet(IMyLandingGear gear) { return new Magnet(gear); }
+        Magnet LoadMagnet(IMyLandingGear gear) { Magnet loadedMagnet = new Magnet(gear); MagnetBin.Add(loadedMagnet); return loadedMagnet; }
         Foot LoadFoot(string input) { return new Foot(input); }
         Sequence LoadSequence(string input, JointSet set, List<KeyFrame> buffer) { return new Sequence(input, set, buffer); }
         KeyFrame LoadKeyFrame(string input, List<JointFrame> buffer) { return new KeyFrame(input, buffer); }
@@ -4472,7 +4428,7 @@ namespace IngameScript
 
         #region GETTERS
 
-        static GUIMode GetCurrentGuiMode() { return PROG._CurrentGUIMode; }
+        static GUIMode GetCurrentGuiMode() { return CurrentGUIMode; }
         static TimeSpan GetGridTimeSinceLastRun() { return PROG.Runtime.TimeSinceLastRun; }
         static void GetGridBlockGroups(List<IMyBlockGroup> groups) { PROG.GridTerminalSystem.GetBlockGroups(groups); }
         static void GetGridBlocksOfType<T>(List<T> blocks) where T : class { PROG.GridTerminalSystem.GetBlocksOfType(blocks); }
