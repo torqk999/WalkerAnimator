@@ -93,6 +93,7 @@ namespace IngameScript
             public virtual void Insert(Root root, int index = -1) { }
             public virtual void Remove(int index, eRoot type = eRoot.DEFAULT) { }
             public virtual void Swap(int target, int delta, eRoot type = eRoot.DEFAULT) { }
+            public virtual void ReParent(int target, int parentDes, eRoot type = eRoot.DEFAULT) { }
             public virtual void ReIndex(eRoot type = eRoot.DEFAULT) { }
             public virtual void Sort(eRoot type = eRoot.DEFAULT) { }
 
@@ -136,7 +137,10 @@ namespace IngameScript
                 roots[destination].MyIndex = destination;
                 roots[target].MyIndex = target;
             }
+            protected void reParent(List<Root> targetRoots, List<Root> destRoots, int targetIndex, int desIndex)
+            {
 
+            }
             protected void reIndex(List<Root> roots)
             {
                 for (int i = 0; i < roots.Count; i++)

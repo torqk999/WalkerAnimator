@@ -19,7 +19,7 @@ namespace IngameScript
             public KeyFrame(string input, List<JointFrame> buffer) : base(input)
             {
                 Jframes.AddRange(buffer);
-                _name = _name == null ? _name = "Un-named KeyFrame" : _name;
+                BUILT = Load(input);
             }
 
             public JointFrame GetJointFrameByJointIndex(int index)

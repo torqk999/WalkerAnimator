@@ -16,7 +16,7 @@ namespace IngameScript
 
             public Animation(string input) : base()
             {
-                BUILT = Load(input);
+                //BUILT = Load(input);
             }
 
             public override string Name()
@@ -39,11 +39,9 @@ namespace IngameScript
                     return false;
 
                 try {
-                    _name = data[(int)PARAM.Name];
                     GenerateSetting(float.Parse(data[(int)PARAM.SettingInit]));
                 }
                 catch {
-                    _name = null;
                     GenerateSetting(0);
                 }
 

@@ -24,7 +24,7 @@ namespace IngameScript
             public JointFrame(string input, Joint joint) : base(input)
             {
                 Joint = joint;
-                _name = _name == null ? _name = "Un-named JointFrame" : _name;
+                BUILT = Load(input);
             }
             public override void GenerateSetting(float init)
             {

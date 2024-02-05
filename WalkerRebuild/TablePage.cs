@@ -240,7 +240,6 @@ namespace IngameScript
                         break;
 
                     case PARAM.pIX:
-
                         joint.ParentIndex += deltaValue;
                         break;
 

@@ -29,7 +29,7 @@ namespace IngameScript
             {
                 JointSet = set;
                 Frames.AddRange(buffer);
-                _name = _name == null ? _name = "Un-named Sequence" : _name;
+                BUILT = Load(input);
             }
             public KeyFrame GetKeyFrame(int index)
             {
