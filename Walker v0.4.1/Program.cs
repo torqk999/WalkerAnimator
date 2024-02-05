@@ -641,20 +641,19 @@ namespace IngameScript
                 StaticDlog("Root Load:");
                 try
                 {
-
                     TAG = data[(int)PARAM.TAG];
-
                     Name = data[(int)PARAM.Name];
-
                     MyIndex = int.Parse(data[(int)PARAM.uIX]);
-
                     ParentIndex = int.Parse(data[(int)PARAM.pIX]);
-
-                    
 
                     return true;
                 }
                 catch { return false; }
+            }
+            public string[] SaveDataArray()
+            {
+                saveData(SaveBuffer);
+                return SaveBuffer;
             }
             public string SaveData()
             {
@@ -1385,6 +1384,8 @@ namespace IngameScript
                 int index = SelectedIndex(CurrentDirectoryLayer) + adjust;
                 index = index >= count ? 0 : index < 0 ? count - 1 : index;
                 SelectedIndexes[CurrentDirectoryLayer] = index;
+
+                DemoSelectedFrame();
             }
             void ChangeDirectory(bool up)
             {
@@ -1749,11 +1750,20 @@ namespace IngameScript
                 RawBuffer.Add("= Assignment =");
                 RawBuffer.Add($"[Selected JSET:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Name}][FootCount:{GetJointSet(SelectedIndexes[eRoot.JSET])?.Feet.Count}]=");
 
+                HeaderSize = 2;
 
                 DisplayManagerBuilder.Clear();
 
-                for (int i = 0; i < 6; i++)
+                
+
+                for (int i = (int)PARAM.uIX; i < ParamCount; i++)
+                {
+                    
                     DisplayManagerBuilder.Append($"[{(PARAM)i}]");
+                }
+                    
+
+                DisplayManagerBuilder.Append("[Name]");
 
                 RawBuffer.Add(DisplayManagerBuilder.ToString());
 
@@ -1762,7 +1772,20 @@ namespace IngameScript
 
                 return RawBuffer.ToArray();
             }
-
+            const int PadSize = 3;
+            string Pad(int i)
+            {
+                string output = i.ToString();
+                int count = i < 0 ? 1 : 0;
+                do {
+                    count++;
+                    i /= 10;
+                } while (i > 0);
+                
+                for (int j = 0; j < PadSize - count; j++)
+                    output += " ";
+                return output;
+            }
             void AppendJointToTable(Joint joint, int index)
             {
                 DisplayManagerBuilder.Clear();
@@ -1772,7 +1795,19 @@ namespace IngameScript
                 cursorCounter++;
 
                 DisplayManagerBuilder.Append(BuildCursor(selected));
-                DisplayManagerBuilder.Append($"{index}:{joint.SaveData()}");
+                DisplayManagerBuilder.Append($"{index}");
+                int[] indexes = joint.Indexes();
+                int selectedParam = SelectedIndex(eRoot.PARAM);
+                int selectedJoint = SelectedIndex(eRoot.JOINT);
+                for (int i = 0; i < indexes.Length; i++)
+                {
+                    string leftSelect = selectedParam == i && selectedJoint == index ? Cursor[2] : Cursor[0];
+                    string rightSelect = selectedParam == i && selectedJoint == index ? Cursor[3] : Cursor[0];
+                    DisplayManagerBuilder.Append($"{leftSelect}[{Pad(indexes[i])}]{rightSelect}");
+                }
+                    
+
+                DisplayManagerBuilder.Append($" == {joint.Name}");
 
                 RawBuffer.Add(DisplayManagerBuilder.ToString());
 
@@ -1808,6 +1843,35 @@ namespace IngameScript
 
                 SelectedIndexes[eRoot.PARAM] += deltaX;
                 SelectedIndexes[eRoot.PARAM] = SelectedIndexes[eRoot.PARAM] < 0 ? ParamCount - 1: SelectedIndexes[eRoot.PARAM] >= ParamCount ? 0 : SelectedIndexes[eRoot.PARAM];
+
+                AdjustJointParam(JointBin[SelectedIndex(eRoot.JOINT)] as Joint, (PARAM)SelectedIndex(eRoot.PARAM), deltaValue);
+            }
+
+            void AdjustJointParam(Joint joint, PARAM targetParam, int deltaValue)
+            {
+                switch(targetParam)
+                {
+                    case PARAM.uIX:
+                        joint.MyIndex += deltaValue;
+                        break;
+
+                    case PARAM.pIX:
+                        joint.ParentIndex += deltaValue;
+                        break;
+
+                    case PARAM.fIX:
+                        joint.FootIndex += deltaValue;
+                        break;
+
+                    case PARAM.GripDirection:
+                        joint.GripDirection += deltaValue;
+                        joint.GripDirection = joint.GripDirection < -1 ? -1 : joint.GripDirection > 1 ? 1 : joint.GripDirection;
+                        break;
+
+                    case PARAM.sIX:
+                        joint.SyncIndex += deltaValue;
+                        break;
+                }
             }
         }
         class OptionsPage : Page
@@ -1990,6 +2054,8 @@ namespace IngameScript
             }
             public bool TriggerButton(GUIKey keyPress)
             {
+                keyPress = AlternateMode && (int)keyPress < 20 ? (GUIKey)((int)keyPress + 10) : keyPress;
+
                 if (!Buttons.ContainsKey(keyPress))
                     return false;
 
@@ -2133,6 +2199,17 @@ namespace IngameScript
             {
                 try { return Connection.IsWorking; }
                 catch { return false; }
+            }
+            public int[] Indexes()
+            {
+                int[] indexes = new int[] {
+                    MyIndex,
+                    ParentIndex,
+                    FootIndex,
+                    GripDirection,
+                    SyncIndex
+                };
+                return indexes;
             }
             public virtual void Sync()
             {
@@ -2970,7 +3047,7 @@ namespace IngameScript
             "roll left"
         };
 
-        static readonly string[] Cursor = { "  ", "->" };
+        static readonly string[] Cursor = { " ", ">", "[", "]" };
 
         #region INFO PANELS
         static readonly string MainText = $"Mech Control {VersionNumber}\n\n" +
@@ -3289,7 +3366,7 @@ namespace IngameScript
 
                     InputRotationBuffer.Z = RollScalar * -CockPit.RollIndicator;
                     InputTurnBuffer = CockPit.MoveIndicator.X;
-                    MoveBuffer = (int)CockPit.MoveIndicator.Z;
+                    MoveBuffer = -(int)CockPit.MoveIndicator.Z;
                 }
 
                 DebugBinStream.Append($"TurnBuffer(f): {InputTurnBuffer}\n");
